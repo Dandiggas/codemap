@@ -51,5 +51,28 @@ class TestEdges(unittest.TestCase):
         by_path = {"web/client.ts": {}}
         self.assertEqual(_resolve("./client", "web/index.ts", by_path), "web/client.ts")
 
+
+
+    def test_src_layout_absolute_import_resolution(self):
+        from lib.edges import _resolve
+        by_path = {"src/pli/audio/tags.py": {}, "src/pli/config.py": {}}
+        self.assertEqual(_resolve("pli.audio.tags", "src/pli/indexer/worker.py", by_path),
+                         "src/pli/audio/tags.py")
+        self.assertEqual(_resolve("pli.config", "src/pli/indexer/worker.py", by_path),
+                         "src/pli/config.py")
+
+    def test_src_layout_ambiguous_suffix_not_resolved(self):
+        from lib.edges import _resolve
+        by_path = {"a/pkg/mod.py": {}, "b/pkg/mod.py": {}}
+        self.assertIsNone(_resolve("pkg.mod", "a/main.py", by_path))
+
+    def test_level_edge_weights(self):
+        app = self._node("app")
+        w = {(e["source"], e["target"]): e.get("weight") for e in app["edges"]}
+        self.assertEqual(w[("core", "adapters")], 1)
+        core = self._node("app", "core")
+        w2 = {(e["source"], e["target"]): e.get("weight") for e in core["edges"]}
+        self.assertGreaterEqual(w2[("orders.py", "store.py")], 1)
+
 if __name__ == "__main__":
     unittest.main()

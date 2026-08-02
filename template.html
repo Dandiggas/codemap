@@ -42,12 +42,23 @@
 
   #stage { display: flex; }
   #mapwrap { flex: 1; padding: 14px 22px 26px; }
-  .level-title { font-size: 13px; color: var(--faint); margin-bottom: 10px; font-family: var(--mono); }
+  .level-title { font-size: 13px; color: var(--faint); margin-bottom: 10px; font-family: var(--mono); display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   #canvas { position: relative; width: 100%; }
   #canvas svg, .diagram svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
   .flow-line { stroke: var(--amber-dim); stroke-width: 1.5; fill: none; opacity: .8; }
   .flow-label { font-family: var(--mono); font-size: 10.5px; fill: var(--muted); }
   .flow-label-bg { fill: var(--bg); opacity: .92; }
+  /* calm-by-default focus mode (Code tab dir/file edges) */
+  .flow-line.edge-dim { opacity: .13; }
+  .flow-line.edge-lit { opacity: 1; stroke: var(--amber); }
+  .flow-label.edge-dim, .flow-label-bg.edge-dim { display: none; }
+  .flow-label.edge-lit, .flow-label-bg.edge-lit { display: block; }
+  .box-dim { opacity: .45; }
+  .edge-chip {
+    font-family: var(--mono); font-size: 11px; color: var(--muted); border: 1px solid var(--edge);
+    border-radius: 12px; padding: 2px 10px; cursor: pointer; transition: all .15s;
+  }
+  .edge-chip:hover { color: var(--text); border-color: var(--amber-dim); }
 
   .box {
     position: absolute; background: var(--box); border: 1px solid var(--edge); border-radius: 10px;
@@ -163,9 +174,13 @@ function borderPoint(cx, cy, w, h, tx, ty) {
   const s = Math.min(sx, sy);
   return [cx + dx * s, cy + dy * s];
 }
-/* edges are {source, target, label?} objects (real edge data from lib/edges.py
-   and lib/infra.py both use this shape; synthetic overview edges match it too) */
-function drawEdges(svg, layoutRect, edges, W, H, curveOff) {
+/* edges are {source, target, label?, weight?} objects (real edge data from
+   lib/edges.py and lib/infra.py both use this shape; synthetic overview
+   edges match it too). opts.calm (Code tab only) renders edges dim-by-default
+   with weight-mapped thickness, hidden labels, and data-src/data-dst tags so
+   box hover can focus them without a re-render. */
+function drawEdges(svg, layoutRect, edges, W, H, curveOff, opts) {
+  const calm = !!(opts && opts.calm);
   const svgNS = 'http://www.w3.org/2000/svg';
   edges.forEach(e => {
     const from = e.source, to = e.target, label = e.label;
@@ -180,8 +195,12 @@ function drawEdges(svg, layoutRect, edges, W, H, curveOff) {
     const qx = mx + nx/nlen*off, qy = my + ny/nlen*off;
     const p = document.createElementNS(svgNS, 'path');
     p.setAttribute('d', `M ${x1} ${y1} Q ${qx} ${qy} ${x2} ${y2}`);
-    p.setAttribute('class', 'flow-line');
+    p.setAttribute('class', calm ? 'flow-line edge-dim' : 'flow-line');
     p.setAttribute('marker-end', 'url(#arr)');
+    if (calm) {
+      p.style.strokeWidth = String(1 + Math.min(3, Math.log2(e.weight || 1)));
+      p.dataset.src = from; p.dataset.dst = to;
+    }
     svg.appendChild(p);
     if (!label) return;
     const lx = (x1 + 2*qx + x2)/4, ly = (y1 + 2*qy + y2)/4;
@@ -189,11 +208,13 @@ function drawEdges(svg, layoutRect, edges, W, H, curveOff) {
     const bg = document.createElementNS(svgNS, 'rect');
     bg.setAttribute('x', lx - bb.w/2); bg.setAttribute('y', ly - 12);
     bg.setAttribute('width', bb.w); bg.setAttribute('height', bb.h);
-    bg.setAttribute('rx', 4); bg.setAttribute('class', 'flow-label-bg');
+    bg.setAttribute('rx', 4); bg.setAttribute('class', calm ? 'flow-label-bg edge-dim' : 'flow-label-bg');
+    if (calm) { bg.dataset.src = from; bg.dataset.dst = to; }
     svg.appendChild(bg);
     const t = document.createElementNS(svgNS, 'text');
     t.setAttribute('x', lx); t.setAttribute('y', ly);
-    t.setAttribute('class', 'flow-label'); t.setAttribute('text-anchor', 'middle');
+    t.setAttribute('class', calm ? 'flow-label edge-dim' : 'flow-label'); t.setAttribute('text-anchor', 'middle');
+    if (calm) { t.dataset.src = from; t.dataset.dst = to; }
     t.textContent = label;
     svg.appendChild(t);
   });
@@ -203,9 +224,36 @@ function mkSvg(W, H) {
   const svg = document.createElementNS(svgNS, 'svg');
   svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
   const defs = document.createElementNS(svgNS, 'defs');
-  defs.innerHTML = `<marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 1 L 9 5 L 0 9 z" fill="#8a6420"/></marker>`;
+  defs.innerHTML = `<marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 1 L 9 5 L 0 9 z" fill="#8a6420"/></marker><marker id="arr-lit" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 1 L 9 5 L 0 9 z" fill="#f5a623"/></marker>`;
   svg.appendChild(defs);
   return svg;
+}
+/* box-hover focus for calm edges: class toggles only, no re-render.
+   name === null clears focus entirely. */
+function setEdgeFocus(svg, name) {
+  const touched = new Set();
+  svg.querySelectorAll('[data-src]').forEach(el => {
+    const hit = name !== null && (el.dataset.src === name || el.dataset.dst === name);
+    el.classList.toggle('edge-lit', hit);
+    el.classList.toggle('edge-dim', !hit);
+    if (el.tagName === 'path') el.setAttribute('marker-end', hit ? 'url(#arr-lit)' : 'url(#arr)');
+    if (hit) { touched.add(el.dataset.src); touched.add(el.dataset.dst); }
+  });
+  return touched;
+}
+function focusEdges(name) {
+  const svg = canvas.querySelector('svg');
+  if (!svg) return;
+  const touched = setEdgeFocus(svg, name);
+  touched.add(name);
+  canvas.querySelectorAll('.box[data-boxname]').forEach(b => {
+    b.classList.toggle('box-dim', !touched.has(b.dataset.boxname));
+  });
+}
+function clearEdgeFocus() {
+  const svg = canvas.querySelector('svg');
+  if (svg) setEdgeFocus(svg, null);
+  canvas.querySelectorAll('.box[data-boxname]').forEach(b => b.classList.remove('box-dim'));
 }
 
 /* ---------- real data ---------- */
@@ -214,6 +262,7 @@ const DATA = __CODEMAP_DATA__;
 let path = [DATA.tree];
 let activeLens = null;
 let activeTab = 'overview';
+let pruneState = { node: null, showAll: false }; // per-level edge-pruning toggle state (Code tab)
 
 // lenses are {name: [repo-relative paths]}; a node is lit when the active
 // lens's path list contains its own path (file: exact match) or a path
@@ -279,13 +328,31 @@ function renderCode() {
   renderLensBar();
 
   const kids = boxChildren(cur);
-  ltitle.textContent = path.map(p=>p.name).join(' / ') + ' · ' +
+  if (pruneState.node !== cur) pruneState = { node: cur, showAll: false };
+  const titleText = path.map(p=>p.name).join(' / ') + ' · ' +
     (kids[0] && SYMBOL_KINDS.has(kids[0].kind) ? kids.length + ' functions' : kids.length + ' components');
   sumSlot.innerHTML = '';
   canvas.innerHTML = '';
   const W = canvas.clientWidth || 900;
   const scale = W / 100;
   const hasLayout = !!(cur.layout && Object.keys(cur.layout).length);
+  const allEdges = cur.edges || [];
+  const needsChip = hasLayout && allEdges.length > 10;
+  const shownEdges = (needsChip && !pruneState.showAll)
+    ? allEdges.slice().sort((a, b) => (b.weight || 1) - (a.weight || 1)).slice(0, 10)
+    : allEdges;
+
+  ltitle.innerHTML = `<span>${esc(titleText)}</span>` + (needsChip
+    ? `<span class="edge-chip" id="edgeChip">${pruneState.showAll
+        ? esc(`showing all ${allEdges.length} · show fewer`)
+        : esc(`showing 10 of ${allEdges.length} arrows · show all`)}</span>`
+    : '');
+  if (needsChip) {
+    document.getElementById('edgeChip').onclick = () => {
+      pruneState.showAll = !pruneState.showAll;
+      renderCode();
+    };
+  }
 
   if (hasLayout) {
     const H = 62 * scale;
@@ -295,12 +362,16 @@ function renderCode() {
     for (const [id, [x, y, w, h]] of Object.entries(cur.layout)) {
       rect[id] = { x: x*scale, y: y*scale, w: w*scale, h: h*scale, cx: (x+w/2)*scale, cy: (y+h/2)*scale };
     }
-    drawEdges(svg, rect, (cur.edges || []).map(e => ({ source: e.source, target: e.target, label: e.label })), W, H);
+    drawEdges(svg, rect, shownEdges.map(e => ({ source: e.source, target: e.target, label: e.label, weight: e.weight })), W, H, undefined, { calm: true });
     canvas.appendChild(svg);
     kids.forEach((k, idx) => {
       const L = cur.layout[k.name];
       if (!L) return;
-      canvas.appendChild(makeBox(k, cur, idx, { left: L[0]*scale, top: L[1]*scale, width: L[2]*scale, height: L[3]*scale }));
+      const boxEl = makeBox(k, cur, idx, { left: L[0]*scale, top: L[1]*scale, width: L[2]*scale, height: L[3]*scale });
+      boxEl.dataset.boxname = k.name;
+      boxEl.addEventListener('mouseenter', () => focusEdges(k.name));
+      boxEl.addEventListener('mouseleave', clearEdgeFocus);
+      canvas.appendChild(boxEl);
     });
   } else {
     canvas.style.height = 'auto';

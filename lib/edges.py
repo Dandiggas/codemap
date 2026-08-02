@@ -81,6 +81,13 @@ def _resolve(imp: str, src_path: str, by_path: dict):
     cand = imp.replace(".", "/") + "/__init__.py"
     if cand in by_path:
         return cand
+    # src-layout fallback: package root nested under a source dir
+    # (src/pli/audio.py imported as pli.audio). Accept a suffix match
+    # only when it is unambiguous across the repo.
+    for suffix in (imp.replace(".", "/") + ".py", imp.replace(".", "/") + "/__init__.py"):
+        matches = [p for p in by_path if p.endswith("/" + suffix)]
+        if len(matches) == 1:
+            return matches[0]
     return None
 
 def _attach_level_edges(node, file_edges):
@@ -92,12 +99,19 @@ def _attach_level_edges(node, file_edges):
             child_of[f["path"]] = child["name"]
         if child["kind"] == "file":
             child_of[child["path"]] = child["name"]
-    seen, edges = set(), []
+    weight, order = {}, []
     for e in file_edges:
         s, d = child_of.get(e["src"]), child_of.get(e["dst"])
-        if s and d and s != d and (s, d) not in seen:
-            seen.add((s, d))
-            edges.append({"source": s, "target": d, "kind": e["kind"], "label": None})
+        if s and d and s != d:
+            key = (s, d)
+            if key not in weight:
+                weight[key] = 0
+                order.append((key, e["kind"]))
+            weight[key] += 1
+    edges = [
+        {"source": s, "target": d, "kind": kind, "label": None, "weight": weight[(s, d)]}
+        for (s, d), kind in order
+    ]
     node["edges"] = edges
     for child in node["children"]:
         _attach_level_edges(child, file_edges)
