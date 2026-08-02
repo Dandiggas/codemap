@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>codemap</title>
+<style>
+  :root {
+    --bg: #0d0b09; --panel: #16130f; --box: #1d1915; --box-hover: #262019;
+    --edge: #2e2820; --amber: #f5a623; --amber-dim: #8a6420;
+    --text: #ece5da; --muted: #9a8f80; --faint: #6b6156;
+    --green: #7fb069; --blue: #6a9fb5;
+    --mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
+    --sans: "Geist", -apple-system, "Helvetica Neue", sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: var(--sans); min-height: 100vh; overflow-x: hidden; }
+  header { display: flex; align-items: center; gap: 16px; padding: 12px 22px; border-bottom: 1px solid var(--edge); }
+  .logo { font-family: var(--mono); font-size: 13px; color: var(--amber); letter-spacing: 1px; }
+
+  .tabs { display: flex; gap: 4px; margin-left: 10px; }
+  .tab {
+    font-family: var(--mono); font-size: 12.5px; color: var(--muted); padding: 6px 14px;
+    border-radius: 7px; cursor: pointer; border: 1px solid transparent;
+  }
+  .tab:hover { color: var(--text); background: var(--box); }
+  .tab.active { color: var(--amber); background: var(--box); border-color: var(--edge); }
+  .hint { margin-left: auto; font-size: 12px; color: var(--faint); }
+  .hint b { color: var(--muted); font-weight: 500; }
+
+  .crumbs { display: flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 13px; padding: 10px 22px 0; }
+  .crumb { color: var(--muted); cursor: pointer; padding: 3px 8px; border-radius: 5px; }
+  .crumb:hover { color: var(--text); background: var(--box); }
+  .crumb.current { color: var(--text); background: var(--box); cursor: default; }
+  .crumb-sep { color: var(--faint); }
+
+  .lensbar { display: flex; align-items: center; gap: 8px; padding: 8px 22px; }
+  .lensbar .label { font-size: 11px; text-transform: uppercase; letter-spacing: 1.5px; color: var(--faint); margin-right: 6px; }
+  .lens { font-family: var(--mono); font-size: 12px; color: var(--muted); border: 1px solid var(--edge); border-radius: 20px; padding: 4px 12px; cursor: pointer; transition: all .15s; }
+  .lens:hover { color: var(--text); border-color: var(--amber-dim); }
+  .lens.active { color: #10100c; background: var(--amber); border-color: var(--amber); font-weight: 600; }
+
+  #stage { display: flex; }
+  #mapwrap { flex: 1; padding: 14px 22px 26px; }
+  .level-title { font-size: 13px; color: var(--faint); margin-bottom: 10px; font-family: var(--mono); }
+  #canvas { position: relative; width: 100%; }
+  #canvas svg, .diagram svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  .flow-line { stroke: var(--amber-dim); stroke-width: 1.5; fill: none; opacity: .8; }
+  .flow-label { font-family: var(--mono); font-size: 10.5px; fill: var(--muted); }
+  .flow-label-bg { fill: var(--bg); opacity: .92; }
+
+  .box {
+    position: absolute; background: var(--box); border: 1px solid var(--edge); border-radius: 10px;
+    padding: 12px 14px; cursor: pointer; transition: border-color .15s, background .15s, opacity .2s;
+    animation: rise .3s ease both; display: flex; flex-direction: column; gap: 6px; overflow: hidden;
+  }
+  .box:hover { background: var(--box-hover); border-color: var(--amber-dim); }
+  .box.lit { border-color: var(--amber); box-shadow: 0 0 0 1px var(--amber), 0 4px 24px -8px rgba(245,166,35,.35); }
+  .box.dimmed { opacity: .22; }
+  .box.static { cursor: default; }
+  .box.external { border-style: dashed; background: var(--panel); }
+  .box.center-sys { border-color: var(--amber-dim); }
+  @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+  .box .name { font-family: var(--mono); font-size: 13.5px; color: var(--text); display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+  .box .kind { font-size: 9.5px; color: var(--faint); text-transform: uppercase; letter-spacing: 1px; }
+  .box .caption { font-size: 11.5px; color: var(--muted); line-height: 1.4; }
+  .minis { display: flex; flex-wrap: wrap; gap: 4px; margin-top: auto; }
+  .mini { font-family: var(--mono); font-size: 9.5px; color: var(--faint); border: 1px solid var(--edge); border-radius: 4px; padding: 1px 5px; background: var(--panel); }
+  .box .stat { font-family: var(--mono); font-size: 10px; color: var(--faint); }
+
+  /* pipeline strip */
+  .pipeline { display: flex; align-items: center; gap: 0; margin: 6px 0 22px; flex-wrap: wrap; }
+  .stage-box {
+    background: var(--box); border: 1px solid var(--edge); border-radius: 8px; padding: 10px 14px;
+    font-family: var(--mono); font-size: 12px; min-width: 130px;
+  }
+  .stage-box .s-title { color: var(--text); margin-bottom: 3px; }
+  .stage-box .s-sub { color: var(--faint); font-size: 10.5px; }
+  .stage-arrow { color: var(--amber-dim); font-family: var(--mono); padding: 0 10px; font-size: 15px; }
+  .warn { border-color: #6b4a1e; }
+  .warn .s-title { color: var(--amber); }
+  .section-h { font-size: 11px; text-transform: uppercase; letter-spacing: 1.5px; color: var(--faint); margin: 18px 0 10px; font-family: var(--mono); }
+
+  #peek { width: 0; overflow: hidden; transition: width .2s ease; border-left: 1px solid var(--edge); background: var(--panel); }
+  #peek.open { width: 460px; }
+  .peek-inner { width: 460px; padding: 18px; }
+  .peek-head { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+  .peek-head .fn { font-family: var(--mono); font-size: 14px; color: var(--amber); }
+  .peek-close { margin-left: auto; color: var(--faint); cursor: pointer; font-size: 18px; line-height: 1; }
+  .peek-close:hover { color: var(--text); }
+  .peek-path { font-family: var(--mono); font-size: 11px; color: var(--faint); margin-bottom: 14px; }
+  pre { font-family: var(--mono); font-size: 12px; line-height: 1.6; color: #cfc6b8; background: #0f0d0a; border: 1px solid var(--edge); border-radius: 8px; padding: 14px; overflow-x: auto; white-space: pre; }
+  pre .ln { color: #4d453b; user-select: none; display: inline-block; width: 2.2em; }
+  pre .kw { color: var(--amber); }
+  .peek-actions { display: flex; gap: 10px; margin-top: 14px; }
+  .btn { font-family: var(--mono); font-size: 12px; padding: 8px 14px; border-radius: 7px; border: 1px solid var(--edge); color: var(--text); background: var(--box); cursor: pointer; }
+  .btn.primary { background: var(--amber); color: #10100c; border-color: var(--amber); font-weight: 600; }
+  .btn:hover { border-color: var(--amber-dim); }
+
+  #toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(80px); background: var(--box); border: 1px solid var(--amber-dim); color: var(--text); font-family: var(--mono); font-size: 12px; padding: 10px 18px; border-radius: 8px; transition: transform .25s ease; z-index: 50; }
+  #toast.show { transform: translateX(-50%) translateY(0); }
+  .meta-stamp { font-family: var(--mono); font-size: 11px; color: var(--faint); margin-left: 4px; }
+  .meta-stamp.stale { color: var(--amber); }
+  #staleBanner { position: fixed; top: 0; left: 0; right: 0; z-index: 100; background: var(--amber); color: #10100c; text-align: center; padding: 8px; font-family: var(--mono); font-size: 12.5px; font-weight: 600; }
+  .overview-summary {
+    max-width: 720px; margin: 0 0 8px; font-size: 14px; line-height: 1.6; color: var(--muted);
+    border-left: 2px solid var(--amber-dim); padding-left: 14px;
+  }
+  .overview-summary b { color: var(--text); font-weight: 600; }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">codemap</div>
+  <div class="tabs">
+    <span class="tab active" data-tab="overview">Overview</span>
+    <span class="tab" data-tab="code">Code</span>
+    <span class="tab" data-tab="system">System</span>
+  </div>
+  <span class="meta-stamp" id="metaStamp"></span>
+  <div class="hint" id="hint"></div>
+</header>
+<div id="chrome-code" style="display:none">
+  <div class="crumbs" id="crumbs"></div>
+  <div class="lensbar" id="lensbar" style="display:none"></div>
+</div>
+<div id="stage">
+  <div id="mapwrap">
+    <div class="level-title" id="ltitle"></div>
+    <div id="overview-summary-slot"></div>
+    <div id="canvas"></div>
+  </div>
+  <div id="peek"><div class="peek-inner" id="peekInner"></div></div>
+</div>
+<div id="toast"></div>
+
+<script src="codemap-freshness.js"></script>
+<script>
+/* ---------- shared helpers ---------- */
+const canvas = document.getElementById('canvas');
+const ltitle = document.getElementById('ltitle');
+const sumSlot = document.getElementById('overview-summary-slot');
+const peekEl = document.getElementById('peek');
+const peekInner = document.getElementById('peekInner');
+const hintEl = document.getElementById('hint');
+const chromeCode = document.getElementById('chrome-code');
+let toastTimer;
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 2600);
+}
+function esc(s) {
+  return String(s === undefined || s === null ? '' : s).replace(/[&<>"']/g, c => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
+}
+function borderPoint(cx, cy, w, h, tx, ty) {
+  const dx = tx - cx, dy = ty - cy;
+  if (dx === 0 && dy === 0) return [cx, cy];
+  const sx = (w/2) / Math.abs(dx || 1e-9), sy = (h/2) / Math.abs(dy || 1e-9);
+  const s = Math.min(sx, sy);
+  return [cx + dx * s, cy + dy * s];
+}
+/* edges are {source, target, label?} objects (real edge data from lib/edges.py
+   and lib/infra.py both use this shape; synthetic overview edges match it too) */
+function drawEdges(svg, layoutRect, edges, W, H, curveOff) {
+  const svgNS = 'http://www.w3.org/2000/svg';
+  edges.forEach(e => {
+    const from = e.source, to = e.target, label = e.label;
+    const a = layoutRect[from], b = layoutRect[to];
+    if (!a || !b) return;
+    const [x1, y1] = borderPoint(a.cx, a.cy, a.w, a.h, b.cx, b.cy);
+    const [x2, y2] = borderPoint(b.cx, b.cy, b.w, b.h, a.cx, a.cy);
+    const mx = (x1+x2)/2, my = (y1+y2)/2;
+    const nx = -(y2-y1), ny = (x2-x1);
+    const nlen = Math.hypot(nx, ny) || 1;
+    const off = curveOff !== undefined ? curveOff : 14;
+    const qx = mx + nx/nlen*off, qy = my + ny/nlen*off;
+    const p = document.createElementNS(svgNS, 'path');
+    p.setAttribute('d', `M ${x1} ${y1} Q ${qx} ${qy} ${x2} ${y2}`);
+    p.setAttribute('class', 'flow-line');
+    p.setAttribute('marker-end', 'url(#arr)');
+    svg.appendChild(p);
+    if (!label) return;
+    const lx = (x1 + 2*qx + x2)/4, ly = (y1 + 2*qy + y2)/4;
+    const bb = { w: label.length * 6.4 + 10, h: 16 };
+    const bg = document.createElementNS(svgNS, 'rect');
+    bg.setAttribute('x', lx - bb.w/2); bg.setAttribute('y', ly - 12);
+    bg.setAttribute('width', bb.w); bg.setAttribute('height', bb.h);
+    bg.setAttribute('rx', 4); bg.setAttribute('class', 'flow-label-bg');
+    svg.appendChild(bg);
+    const t = document.createElementNS(svgNS, 'text');
+    t.setAttribute('x', lx); t.setAttribute('y', ly);
+    t.setAttribute('class', 'flow-label'); t.setAttribute('text-anchor', 'middle');
+    t.textContent = label;
+    svg.appendChild(t);
+  });
+}
+function mkSvg(W, H) {
+  const svgNS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(svgNS, 'svg');
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  const defs = document.createElementNS(svgNS, 'defs');
+  defs.innerHTML = `<marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 1 L 9 5 L 0 9 z" fill="#8a6420"/></marker>`;
+  svg.appendChild(defs);
+  return svg;
+}
+
+/* ---------- real data ---------- */
+const DATA = __CODEMAP_DATA__;
+
+let path = [DATA.tree];
+let activeLens = null;
+let activeTab = 'overview';
+
+// lenses are {name: [repo-relative paths]}; a node is lit when the active
+// lens's path list contains its own path (file: exact match) or a path
+// nested under it (dir: prefix match), or any descendant is lit.
+function activeLensPaths() {
+  const map = (DATA.labels && DATA.labels.lenses) || {};
+  return map[activeLens] || [];
+}
+function nodeLit(n) {
+  if (!activeLens) return null;
+  const p = n.path;
+  if (p) {
+    const targets = activeLensPaths();
+    const isFile = n.kind === 'file';
+    const hit = targets.some(t => isFile ? t === p : (t === p || t.startsWith(p + '/')));
+    if (hit) return true;
+  }
+  return (n.children || []).some(c => nodeLit(c) === true);
+}
+
+// dirs/repo drill into .children; files drill into .symbols (functions/classes/methods)
+function boxChildren(k) {
+  return k.kind === 'file' ? (k.symbols || []) : (k.children || []);
+}
+const SYMBOL_KINDS = new Set(['fn', 'class', 'method']);
+
+/* ---------- CODE TAB ---------- */
+function makeBox(k, parent, idx, pos) {
+  const b = document.createElement('div');
+  const lit = nodeLit(k);
+  const isSymbol = SYMBOL_KINDS.has(k.kind);
+  b.className = 'box' + (lit === true ? ' lit' : (activeLens && lit !== true ? ' dimmed' : ''));
+  b.style.animationDelay = (idx * 30) + 'ms';
+  if (pos) {
+    b.style.left = pos.left + 'px'; b.style.top = pos.top + 'px';
+    b.style.width = pos.width + 'px'; b.style.height = pos.height + 'px';
+  }
+  const kidsForMini = boxChildren(k);
+  const minis = kidsForMini.slice(0, 5).map(c => `<span class="mini">${esc(c.name)}</span>`).join('');
+  const more = kidsForMini.length > 5 ? `<span class="mini">+${kidsForMini.length - 5}</span>` : '';
+  b.innerHTML = `
+    <div class="name">${esc(k.name)} <span class="kind">${esc(k.kind)}</span></div>
+    ${k.caption ? `<div class="caption">${esc(k.caption)}</div>` : ''}
+    ${isSymbol ? `<div class="stat">line ${esc(k.line)}</div>` : `<div class="minis">${minis}${more}</div>`}
+  `;
+  b.onclick = () => {
+    if (isSymbol) { openPeek(k, parent); }
+    else if (kidsForMini.length) { path.push(k); closePeek(); renderCode(); }
+    else { toast(`${k.name}: nothing to drill into here`); }
+  };
+  return b;
+}
+
+function renderCode() {
+  const cur = path[path.length - 1];
+  const crumbsEl = document.getElementById('crumbs');
+  crumbsEl.innerHTML = path.map((n, i) =>
+    `<span class="crumb ${i === path.length-1 ? 'current':''}" data-i="${i}">${esc(n.name)}</span>`
+  ).join('<span class="crumb-sep">›</span>');
+  crumbsEl.querySelectorAll('.crumb').forEach(el => {
+    el.onclick = () => { path = path.slice(0, +el.dataset.i + 1); closePeek(); renderCode(); };
+  });
+  renderLensBar();
+
+  const kids = boxChildren(cur);
+  ltitle.textContent = path.map(p=>p.name).join(' / ') + ' · ' +
+    (kids[0] && SYMBOL_KINDS.has(kids[0].kind) ? kids.length + ' functions' : kids.length + ' components');
+  sumSlot.innerHTML = '';
+  canvas.innerHTML = '';
+  const W = canvas.clientWidth || 900;
+  const scale = W / 100;
+  const hasLayout = !!(cur.layout && Object.keys(cur.layout).length);
+
+  if (hasLayout) {
+    const H = 62 * scale;
+    canvas.style.height = H + 'px';
+    const svg = mkSvg(W, H);
+    const rect = {};
+    for (const [id, [x, y, w, h]] of Object.entries(cur.layout)) {
+      rect[id] = { x: x*scale, y: y*scale, w: w*scale, h: h*scale, cx: (x+w/2)*scale, cy: (y+h/2)*scale };
+    }
+    drawEdges(svg, rect, (cur.edges || []).map(e => ({ source: e.source, target: e.target, label: e.label })), W, H);
+    canvas.appendChild(svg);
+    kids.forEach((k, idx) => {
+      const L = cur.layout[k.name];
+      if (!L) return;
+      canvas.appendChild(makeBox(k, cur, idx, { left: L[0]*scale, top: L[1]*scale, width: L[2]*scale, height: L[3]*scale }));
+    });
+  } else {
+    canvas.style.height = 'auto';
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'display:flex;flex-wrap:wrap;gap:14px;position:relative;';
+    kids.forEach((k, idx) => {
+      const b = makeBox(k, cur, idx, null);
+      b.style.position = 'relative'; b.style.minWidth = '170px'; b.style.flexGrow = '1';
+      wrap.appendChild(b);
+    });
+    canvas.appendChild(wrap);
+  }
+}
+
+function renderLensBar() {
+  const lensbar = document.getElementById('lensbar');
+  const lensMap = (DATA.labels && DATA.labels.lenses) || {};
+  const names = Object.keys(lensMap);
+  if (!names.length) { lensbar.style.display = 'none'; lensbar.innerHTML = ''; return; }
+  lensbar.style.display = 'flex';
+  lensbar.innerHTML = `<span class="label">Lenses</span>` + names.map(name =>
+    `<span class="lens${activeLens === name ? ' active' : ''}" data-lens="${esc(name)}">${esc(name)}</span>`
+  ).join('');
+  lensbar.querySelectorAll('.lens').forEach(el => {
+    el.onclick = () => {
+      const l = el.dataset.lens;
+      activeLens = (activeLens === l) ? null : l;
+      if (activeTab === 'code') renderCode();
+    };
+  });
+}
+
+function openPeek(fn, parent) {
+  const filePath = parent.path || parent.name;
+  const meta = DATA.meta;
+  const href = `${meta.editor_scheme}://file${meta.repo_abs}/${filePath}:${fn.line}`;
+  peekInner.innerHTML = `
+    <div class="peek-head"><span class="fn">${esc(fn.name)}()</span><span class="peek-close" onclick="closePeek()">×</span></div>
+    <div class="peek-path">${esc(filePath)}:${esc(fn.line)}</div>
+    ${fn.caption ? `<div class="caption">${esc(fn.caption)}</div>` : ''}
+    <pre>${esc(fn.snippet || '(no snippet captured)')}</pre>
+    <div class="peek-actions">
+      <a class="btn primary" href="${esc(href)}">Open in editor ↗</a>
+      <button class="btn" onclick="toast('caller/callee lookup not in v1')">Who calls this?</button>
+    </div>`;
+  peekEl.classList.add('open');
+  setTimeout(() => activeTab === 'code' && renderCode(), 210);
+}
+function closePeek() { peekEl.classList.remove('open'); setTimeout(() => activeTab === 'code' && renderCode(), 210); }
+
+/* ---------- OVERVIEW TAB ---------- */
+// no premade overview layout ships with the data; lay externals out in two
+// columns flanking a centered repo box, in the same 100x62 unit space the
+// Code tab uses.
+function overviewLayout(externals) {
+  const REPO_ID = '__repo__';
+  const centerW = 26, centerH = 15;
+  const layout = { [REPO_ID]: [50 - centerW/2, 31 - centerH/2, centerW, centerH] };
+  const boxW = 22, boxH = 11, gapY = 4;
+  const left = externals.filter((_, i) => i % 2 === 0);
+  const right = externals.filter((_, i) => i % 2 === 1);
+  const place = (list, x) => {
+    const totalH = list.length * boxH + Math.max(0, list.length - 1) * gapY;
+    let y = Math.max(2, 31 - totalH / 2);
+    list.forEach(e => { layout[e.name] = [x, y, boxW, boxH]; y += boxH + gapY; });
+  };
+  place(left, 2);
+  place(right, 100 - 2 - boxW);
+  return { layout, REPO_ID };
+}
+
+function renderOverview() {
+  const hasLabels = !!(DATA.labels && DATA.labels.overview);
+  ltitle.textContent = DATA.tree.name + ' · what it is and who it talks to';
+  sumSlot.innerHTML = hasLabels
+    ? `<div class="overview-summary">${esc(DATA.labels.overview.summary)}</div>`
+    : `<div class="overview-summary">No semantic labels yet. Run the labeling step.</div>`;
+  canvas.innerHTML = '';
+  const externals = DATA.infra.externals || [];
+  const { layout, REPO_ID } = overviewLayout(externals);
+  const W = canvas.clientWidth || 900;
+  const scale = W / 100;
+  const H = 62 * scale;
+  canvas.style.height = H + 'px';
+  const svg = mkSvg(W, H);
+  const rect = {};
+  for (const [id, [x, y, w, h]] of Object.entries(layout)) {
+    rect[id] = { x: x*scale, y: y*scale, w: w*scale, h: h*scale, cx: (x+w/2)*scale, cy: (y+h/2)*scale };
+  }
+  const edges = externals.map(e => ({ source: e.name, target: REPO_ID, label: null }));
+  drawEdges(svg, rect, edges, W, H, 20);
+  canvas.appendChild(svg);
+  let idx = 0;
+  for (const [id, r] of Object.entries(rect)) {
+    const b = document.createElement('div');
+    const isRepo = id === REPO_ID;
+    b.className = 'box static' + (isRepo ? ' center-sys' : ' external');
+    b.style.left = r.x + 'px'; b.style.top = r.y + 'px';
+    b.style.width = r.w + 'px'; b.style.height = r.h + 'px';
+    b.style.animationDelay = (idx++ * 40) + 'ms';
+    if (isRepo) {
+      b.innerHTML = `<div class="name">${esc(DATA.tree.name)} <span class="kind">this system</span></div>`;
+    } else {
+      const ext = externals.find(e => e.name === id);
+      const extLabels = hasLabels && DATA.labels.overview.externals && DATA.labels.overview.externals[id];
+      const why = extLabels && extLabels.why;
+      const caption = why ? esc(why) : `evidence: ${esc(ext.evidence)}`;
+      b.innerHTML = `<div class="name">${esc(id)} <span class="kind">external</span></div><div class="caption">${caption}</div>`;
+    }
+    canvas.appendChild(b);
+  }
+}
+
+/* ---------- SYSTEM TAB ---------- */
+function stageBoxHtml(s) {
+  return `<div class="stage-box${s.warn ? ' warn' : ''}"><div class="s-title">${esc(s.title)}</div><div class="s-sub">${esc(s.sub)}</div></div>`;
+}
+function renderSystem() {
+  ltitle.textContent = DATA.tree.name + ' · how it ships and where it runs';
+  sumSlot.innerHTML = '';
+  canvas.style.height = 'auto';
+  const pipeline = DATA.infra.pipeline || [];
+  const boundaries = DATA.infra.boundaries || [];
+  const topology = DATA.labels && DATA.labels.system && DATA.labels.system.topology;
+  const pipelineHtml = pipeline.map(stageBoxHtml).join('<span class="stage-arrow">→</span>');
+  const boundariesHtml = boundaries.map(stageBoxHtml).join('');
+  canvas.innerHTML = `
+    <div class="section-h">Build &amp; deploy pipeline</div>
+    <div class="pipeline">${pipelineHtml || '<div class="stage-box"><div class="s-title">no pipeline detected</div></div>'}</div>
+    ${topology ? `<div class="section-h">Runtime topology</div><div id="sys-topo" style="position:relative"></div>` : ''}
+    <div class="section-h">Boundaries &amp; secrets</div>
+    <div class="pipeline" style="gap:10px">${boundariesHtml || '<div class="stage-box"><div class="s-title">none detected</div></div>'}</div>`;
+  if (topology) renderTopology(topology);
+}
+
+// labels-provided runtime topology (Task 10 shape): { layout: {name:[x,y,w,h]}, edges: [{source,target,label}], captions: {name: text} }
+function renderTopology(topo) {
+  const el = document.getElementById('sys-topo');
+  if (!el || !topo.layout) return;
+  const W = el.clientWidth || 900;
+  const scale = W / 100;
+  const H = 38 * scale;
+  el.style.height = H + 'px';
+  const svg = mkSvg(W, H);
+  const rect = {};
+  for (const [id, [x, y, w, h]] of Object.entries(topo.layout)) {
+    rect[id] = { x: x*scale, y: y*scale, w: w*scale, h: h*scale, cx: (x+w/2)*scale, cy: (y+h/2)*scale };
+  }
+  drawEdges(svg, rect, topo.edges || [], W, H, 8);
+  el.appendChild(svg);
+  let idx = 0;
+  for (const [id, r] of Object.entries(rect)) {
+    const b = document.createElement('div');
+    b.className = 'box static';
+    b.style.left = r.x + 'px'; b.style.top = r.y + 'px';
+    b.style.width = r.w + 'px'; b.style.height = r.h + 'px';
+    b.style.animationDelay = (idx++ * 40) + 'ms';
+    const caption = (topo.captions && topo.captions[id]) || '';
+    b.innerHTML = `<div class="name">${esc(id)}</div>${caption ? `<div class="caption">${esc(caption)}</div>` : ''}`;
+    el.appendChild(b);
+  }
+}
+
+/* ---------- header staleness stamp (layer 1) ---------- */
+function renderMetaStamp() {
+  const m = DATA.meta;
+  const el = document.getElementById('metaStamp');
+  if (!el || !m.generated_iso) return;
+  const genDate = new Date(m.generated_iso);
+  const days = Math.max(0, Math.floor((Date.now() - genDate.getTime()) / 86400000));
+  const bits = [`generated ${m.generated_iso.slice(0, 10)}`];
+  if (m.commit) bits.push(m.commit);
+  if (m.branch) bits.push(m.branch);
+  bits.push(`${days} day${days === 1 ? '' : 's'} old`);
+  el.textContent = bits.join(' · ');
+  el.classList.toggle('stale', days > 7);
+}
+
+/* ---------- staleness banner (layer 2) ---------- */
+function checkStaleBanner() {
+  if (typeof window.CODEMAP_HEAD === 'undefined') return;
+  if (!DATA.meta.commit) return;
+  if (window.CODEMAP_HEAD === DATA.meta.commit) return;
+  const banner = document.createElement('div');
+  banner.id = 'staleBanner';
+  banner.textContent = 'STALE: repo has moved past this map. Rerun codemap.';
+  document.body.prepend(banner);
+}
+
+/* ---------- tab switching ---------- */
+const HINTS = {
+  overview: 'one glance: what it is, who it talks to, why',
+  code: '<b>click</b> box = drill · <b>click</b> fn = peek code · breadcrumb = back',
+  system: 'pipeline · runtime topology · boundaries',
+};
+function switchTab(tab) {
+  activeTab = tab;
+  document.querySelectorAll('.tab').forEach(e => e.classList.toggle('active', e.dataset.tab === tab));
+  chromeCode.style.display = tab === 'code' ? 'block' : 'none';
+  hintEl.innerHTML = HINTS[tab];
+  closePeek();
+  if (tab === 'overview') renderOverview();
+  else if (tab === 'code') renderCode();
+  else renderSystem();
+}
+document.querySelectorAll('.tab').forEach(el => { el.onclick = () => switchTab(el.dataset.tab); });
+window.addEventListener('resize', () => switchTab(activeTab));
+document.title = 'codemap · ' + DATA.tree.name;
+renderMetaStamp();
+checkStaleBanner();
+switchTab('overview');
+</script>
+</body>
+</html>
