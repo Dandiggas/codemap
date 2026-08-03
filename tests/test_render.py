@@ -76,5 +76,31 @@ class TestRender(unittest.TestCase):
             self.assertIn('\\u003cscript', html)
             self.assertIn('\\u003c!--', html)
 
+    def test_zero_code_children_collapse_into_group(self):
+        import tempfile, shutil
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "src").mkdir(); (root / "src" / "app.py").write_text("x = 1\n")
+            (root / "db.sqlite").write_text("bin")
+            (root / "db.sqlite-wal").write_text("bin")
+            (root / "notes.md").write_text("hi")
+            tree = scan(root); build(tree, root)
+            html = render(tree, scan_infra(root), {}, root, "vscode")
+            self.assertIn('"data & docs"', html)
+            self.assertIn('"collapsed_count": 3', html)
+
+    def test_no_collapse_when_all_children_are_code(self):
+        tree = scan(FIX)
+        build(tree, FIX)
+        html = render(tree, scan_infra(FIX), {}, FIX, "vscode")
+        # app/ level: core/ and adapters/ both contain code, no group forms there
+        self.assertNotIn('"name": "core", "kind": "group"', html)
+        # root has .github (zero-code, exempt) + Dockerfile (zero-code, lone
+        # candidate: needs 2+ to collapse) alongside code-bearing app/web/main.go -
+        # nothing to collapse at root either, so all of these stay top-level boxes
+        self.assertIn('"name": "app", "kind": "dir"', html)
+        self.assertIn('"name": "web", "kind": "dir"', html)
+        self.assertIn('"name": "main.go", "kind": "file"', html)
+
 if __name__ == "__main__":
     unittest.main()

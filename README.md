@@ -3,7 +3,7 @@
 codemap builds an interactive architecture map of a codebase: three altitudes (Overview, Code, System) in one self-contained HTML file. It runs entirely offline with a Python standard-library scanner, and gets richer if you point a coding agent at it for the optional labeling pass.
 
 - **Overview**: the repo as a handful of top-level areas, with a plain-language summary and the external services it talks to.
-- **Code**: the directory tree with import edges drawn between siblings at every level, drilling down to individual files and their symbols.
+- **Code**: the directory tree with import edges drawn between siblings at every level, drilling down to individual files and their symbols. Each level is laid out at view time by [dagre](https://github.com/dagrejs/dagre) (v0.8.5, MIT, vendored into the template so the page still works offline from `file://`): boxes sized to their own content, ranks flowing left to right, arrows routed around boxes, and space reserved for every arrow label. If the dagre global is missing the tab falls back to the layout baked in by `lib/layout.py`.
 - **System**: CI pipeline, containerization, external hosts, and environment variables, pulled from workflow files, Dockerfiles, and source.
 
 ## Quickstart (no AI required)
@@ -65,6 +65,17 @@ python3 codemap.py hook <root>                        # install the post-commit/
 
 `--editor` controls the scheme used for file-open links in the rendered HTML (`vscode://` or `cursor://`). If omitted, codemap looks for a `cursor` binary on `PATH` and falls back to `vscode`.
 
+## QA
+
+`qa/map-qa.mjs` is optional dev tooling, not part of the core app (the core stays zero-dependency, see Requirements below). It drives a rendered `codemap.html` with Playwright and checks the things a screenshot can't: every box's hover lights exactly as many edges as it has in the data (including pruned ones, which stay in the DOM hidden rather than being dropped), no duplicate edges get drawn, the prune chip's show-all/show-fewer toggle round-trips cleanly, lens activation leaves every box in exactly one of `.lit`/`.dimmed`, hovering a box while a lens is active lights that box's edges and only that box's edges (never the lens+hover union) and restores the lens resting state on mouseleave, no visible arrow label overlaps a box, and levels with more than six boxes actually use the page instead of hiding in a strip at the top.
+
+```bash
+npm i playwright   # once, only for this script — the core app needs nothing
+node qa/map-qa.mjs <path-to-codemap.html>
+```
+
+It prints PASS/FAIL per check, exits 1 on any failure, and always saves screenshots to `<map-dir>/qa/` regardless of pass/fail.
+
 ## Requirements
 
-Python 3.11 or later. No third-party dependencies.
+Python 3.11 or later. Nothing to install: no pip packages, no network. The only third-party code involved is the dagre layout engine, vendored verbatim into `template.html` (MIT) so the rendered map stays a single offline file.

@@ -31,9 +31,10 @@ def render(tree, infra, labels, root: Path, editor_scheme: str) -> str:
 
 
 def _bake(node, root, labels):
-    """Attach layout to every dir level, arrow labels to every dir-level edge,
+    """Attach layout to every dir/group level, arrow labels to every dir-level edge,
     code snippets + captions to every symbol, and file captions to every file."""
-    if node["kind"] in ("dir", "repo"):
+    if node["kind"] in ("dir", "repo", "group"):
+        _collapse_zero_code_children(node)
         node["layout"] = place(node["children"], node.get("edges", []))
         _label_edges(node, labels)
         for c in node["children"]:
@@ -55,6 +56,56 @@ def _bake(node, root, labels):
                 sym_caption = symbol_captions.get(s["name"])
                 if sym_caption:
                     s["caption"] = sym_caption
+
+
+GROUP_NAME = "data & docs"
+GROUP_EXEMPT = {".github"}  # infra tab (System) depends on .github staying visible at its own level
+
+
+def _is_zero_code(node):
+    """True if this node (a file) or its whole subtree (a dir) contains no code files."""
+    if node["kind"] == "file":
+        return node.get("lang") is None
+    return all(_is_zero_code(c) for c in node.get("children", []))
+
+
+def _collapse_zero_code_children(node):
+    """Fold 2+ zero-code children (db files, docs, lockfiles, renders) into one
+    synthetic 'data & docs' group box, so a level isn't a junk drawer of
+    zero-signal boxes sitting next to the real architecture.
+
+    Rules: only collapse when there's at least one code-bearing sibling (an
+    all-docs level stays flat rather than collapsing into nothing); never
+    collapse .github (the System tab depends on it staying visible at this
+    level); and never collapse a child an aggregated edge still references
+    (edges.py only aggregates real import edges, so a zero-code child should
+    never be an edge endpoint, but if one somehow is, trust the edge and
+    leave that child uncollapsed rather than orphan the edge).
+    """
+    children = node.get("children")
+    if not children:
+        return
+    has_code_sibling = any(not _is_zero_code(c) for c in children)
+    if not has_code_sibling:
+        return
+    edge_names = set()
+    for e in node.get("edges") or []:
+        edge_names.add(e.get("source"))
+        edge_names.add(e.get("target"))
+    keep, collapsible = [], []
+    for c in children:
+        if c["name"] in GROUP_EXEMPT or c["name"] in edge_names or not _is_zero_code(c):
+            keep.append(c)
+        else:
+            collapsible.append(c)
+    if len(collapsible) < 2:
+        return
+    group = {
+        "name": GROUP_NAME, "kind": "group", "path": node.get("path", ""), "lang": None,
+        "size": sum(c.get("size", 0) for c in collapsible),
+        "children": collapsible, "collapsed_count": len(collapsible),
+    }
+    node["children"] = keep + [group]
 
 
 def _leaf_paths(node, out=None):

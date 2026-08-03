@@ -96,6 +96,10 @@ If the target isn't a git repo (or has zero commits), don't offer the hook: tell
 
 If the target repo has a `.gitignore` and it doesn't already exclude `.codemap/`, offer to add it. `.codemap/` contains a generated HTML file, a label cache, and a freshness sidecar, none of it belongs in version control.
 
+**7. Run the QA pass.**
+
+After rendering, if node + playwright are available, run `node <repo-clone-path>/qa/map-qa.mjs <root>/.codemap/codemap.html` and fix or report any FAIL before handing the map to the user; if playwright is unavailable, say the QA pass was skipped.
+
 ## Label style rules
 
 - File captions: ≤ 12 words, describe what the file does, not what it's named.
