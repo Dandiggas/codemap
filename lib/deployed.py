@@ -64,6 +64,24 @@ def _has_github_remote(root: Path) -> bool:
     return r.returncode == 0 and "github.com" in r.stdout
 
 
+def _is_repo_toplevel(root: Path) -> bool:
+    """True only when root IS the git repository's top level.
+
+    git commands run with cwd=root walk UP the directory tree, so a scanned
+    folder nested inside some unrelated repository would inherit that
+    repository's remotes and get its CI runs attributed to the map. The map
+    is generated FOR root; unless root is itself the repo top level, deployed
+    state cannot be honestly attributed, so the fetch is skipped entirely.
+    """
+    r = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        cwd=str(root), capture_output=True, text=True, timeout=GIT_TIMEOUT,
+    )
+    if r.returncode != 0 or not r.stdout.strip():
+        return False
+    return Path(r.stdout.strip()).resolve() == Path(root).resolve()
+
+
 def _fetch_runs(root: Path) -> list:
     """Shell out to `gh run list`. Raises on any failure; fetch_deployed is
     the only caller and treats any exception here as cache-fallback."""
@@ -108,6 +126,10 @@ def fetch_deployed(root) -> dict:
     cache_path = _cache_path(root)
     cached = _load_cache(cache_path)
     try:
+        if not _is_repo_toplevel(root):
+            # Not this root's repo: any cached copy here was misattributed
+            # from an enclosing repository. Never serve it.
+            return {}
         if not shutil.which("gh"):
             return cached
         if not _has_github_remote(root):

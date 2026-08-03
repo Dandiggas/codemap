@@ -175,5 +175,52 @@ class TestFetchDeployedSuccess(unittest.TestCase):
             self.assertEqual(json.loads(cache_path.read_text()), result)
 
 
+
+
+
+class TestRepoToplevelGuard(unittest.TestCase):
+    def test_nested_folder_inside_github_repo_gets_no_deployed(self):
+        # A scanned folder nested inside an unrelated repo with a github
+        # remote must NOT inherit that repo's CI attribution (git walks up).
+        import subprocess
+        with tempfile.TemporaryDirectory() as td:
+            outer = Path(td)
+            subprocess.run(["git", "init", "-q"], cwd=outer, check=True)
+            subprocess.run(["git", "remote", "add", "origin",
+                            "https://github.com/example/outer.git"], cwd=outer, check=True)
+            nested = outer / "some" / "scanned" / "folder"
+            nested.mkdir(parents=True)
+            (nested / "x.py").write_text("a = 1")
+            self.assertEqual(fetch_deployed(nested), {})
+
+    def test_nested_folder_never_serves_a_stale_cache(self):
+        # A misattributed cache written before the guard existed must not be
+        # served either: nested roots always get {}.
+        import subprocess
+        with tempfile.TemporaryDirectory() as td:
+            outer = Path(td)
+            subprocess.run(["git", "init", "-q"], cwd=outer, check=True)
+            subprocess.run(["git", "remote", "add", "origin",
+                            "https://github.com/example/outer.git"], cwd=outer, check=True)
+            nested = outer / "scanned"
+            nested.mkdir()
+            stale = nested / ".codemap"
+            stale.mkdir()
+            (stale / "deployed.json").write_text(
+                '{"workflows": [{"workflow": "stale", "sha": "beef"}], "fetched_at": "old"}')
+            self.assertEqual(fetch_deployed(nested), {})
+
+    def test_repo_toplevel_itself_passes_the_guard(self):
+        from lib.deployed import _is_repo_toplevel
+        import subprocess
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            self.assertTrue(_is_repo_toplevel(root))
+            sub = root / "sub"
+            sub.mkdir()
+            self.assertFalse(_is_repo_toplevel(sub))
+
+
 if __name__ == "__main__":
     unittest.main()
