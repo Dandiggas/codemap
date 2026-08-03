@@ -2,12 +2,20 @@ import json, subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from lib.layout import place
+from lib.iac import scan_iac
+from lib.deployed import fetch_deployed
 
 TEMPLATE = Path(__file__).parent.parent / "template.html"
 SNIPPET_LINES = 25
 
 
-def render(tree, infra, labels, root: Path, editor_scheme: str) -> str:
+def render(tree, infra, labels, root: Path, editor_scheme: str, fetch_gh: bool = True) -> str:
+    """Bake the whole payload into template.html.
+
+    `fetch_gh=False` (the CLI's --no-gh) skips lib/deployed.fetch_deployed
+    entirely, which is the ONLY part of a render that can touch the network:
+    the deployed chip stays dormant and the render is guaranteed offline.
+    """
     root = Path(root).resolve()
     _bake(tree, root, labels or {})
     meta = {
@@ -17,7 +25,12 @@ def render(tree, infra, labels, root: Path, editor_scheme: str) -> str:
         "repo_abs": str(root),
         "editor_scheme": editor_scheme,
     }
-    data = {"tree": tree, "infra": infra, "labels": labels, "meta": meta}
+    iac = _bake_iac(scan_iac(root), labels or {})
+    # GH Actions enrichment: best-effort, cached, never blocks or fails a render
+    # (see lib/deployed.py). Runs after _bake_iac so the "why" merge above only
+    # ever touches the deterministic roles/connections model, never this.
+    iac["deployed"] = fetch_deployed(root) if fetch_gh else {}
+    data = {"tree": tree, "infra": infra, "iac": iac, "labels": labels, "meta": meta}
     # guard: a repo file's baked snippet (or any string) could contain "</script>",
     # "<!--", or "<script" sequences that would prematurely terminate or otherwise
     # confuse the inline <script> block (an HTML parser watches for "</script"
@@ -28,6 +41,33 @@ def render(tree, infra, labels, root: Path, editor_scheme: str) -> str:
     # string literal, so the payload remains valid JSON and valid JS.
     payload = json.dumps(data).replace("<", "\\u003c")
     return TEMPLATE.read_text().replace("__CODEMAP_DATA__", payload)
+
+
+def _bake_iac(iac, labels):
+    """Merge the labeling pass's infra whys onto the deterministic IaC model.
+
+    cache.json's optional "infra" section is the same file-captions idea one
+    altitude up: {"roles": {<role id>: {"why": str}},
+                  "connections": {"<src>→<dst>": str}}.
+    Whys are additive only: a label for an id the scan no longer produces (a
+    renamed role, a deleted connection) is silently dropped rather than
+    inventing a role box or a grant that no source file backs.
+    """
+    section = (labels.get("infra") or {}) if isinstance(labels, dict) else {}
+    role_whys = section.get("roles") or {}
+    conn_whys = section.get("connections") or {}
+    for role in iac.get("roles", []):
+        entry = role_whys.get(role.get("id"))
+        why = entry.get("why") if isinstance(entry, dict) else entry
+        if why:
+            role["why"] = why
+    for conn in iac.get("connections", []):
+        why = conn_whys.get(f"{conn.get('src')}→{conn.get('dst')}")
+        if isinstance(why, dict):
+            why = why.get("why")
+        if why:
+            conn["why"] = why
+    return iac
 
 
 def _bake(node, root, labels):

@@ -4,3 +4,4 @@ __pycache__/
 .superpowers/
 !tests/fixtures/toyrepo/__pycache__/
 !tests/fixtures/toyrepo/__pycache__/*.pyc
+node_modules/

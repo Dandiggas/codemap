@@ -5,6 +5,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from lib.scan import scan
 from lib.edges import build
 from lib.infra import scan_infra
+from lib.iac import scan_iac
 from lib.cache import load, uncached_files
 from lib.render import render, write
 from lib.hook import write_sidecar, install
@@ -23,6 +24,9 @@ def main():
     ap.add_argument("root", type=Path)
     ap.add_argument("--editor", default=None, choices=["vscode", "cursor"],
                      help="editor scheme for file-open links (default: auto-detect, falls back to vscode)")
+    ap.add_argument("--no-gh", action="store_true",
+                     help="render: skip the GitHub Actions deployed-state fetch (the only "
+                          "network call codemap can make), leaving the deployed chip dormant")
     args = ap.parse_args()
     root = args.root.resolve()
 
@@ -32,12 +36,14 @@ def main():
         print(json.dumps({"tree_summary": _summary(tree),
                           "file_edges": flat["file_edges"],
                           "infra": scan_infra(root),
+                          "iac": scan_iac(root),
                           "uncached": uncached_files(root, tree)}))
     elif args.cmd == "render":
         tree = scan(root)
         build(tree, root)
         labels = load(root)
-        html = render(tree, scan_infra(root), labels, root, args.editor or detect_editor())
+        html = render(tree, scan_infra(root), labels, root,
+                      args.editor or detect_editor(), fetch_gh=not args.no_gh)
         path = write(html, root)
         try:
             write_sidecar(root)

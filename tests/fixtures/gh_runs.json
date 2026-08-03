@@ -1,0 +1,17 @@
+[
+  {"workflowName": "deploy", "status": "completed", "conclusion": "success",
+   "headSha": "aaa1111aaa1111aaa1111aaa1111aaa1111aaaa", "updatedAt": "2026-08-01T10:00:00Z",
+   "url": "https://github.com/example/repo/actions/runs/1"},
+  {"workflowName": "deploy", "status": "completed", "conclusion": "failure",
+   "headSha": "bbb2222bbb2222bbb2222bbb2222bbb2222bbbb", "updatedAt": "2026-08-02T10:00:00Z",
+   "url": "https://github.com/example/repo/actions/runs/2"},
+  {"workflowName": "ci", "status": "completed", "conclusion": "success",
+   "headSha": "ccc3333ccc3333ccc3333ccc3333ccc3333cccc", "updatedAt": "2026-08-01T09:00:00Z",
+   "url": "https://github.com/example/repo/actions/runs/3"},
+  {"workflowName": "ci", "status": "in_progress", "conclusion": null,
+   "headSha": "ddd4444ddd4444ddd4444ddd4444ddd4444dddd", "updatedAt": "2026-07-30T09:00:00Z",
+   "url": "https://github.com/example/repo/actions/runs/4"},
+  {"workflowName": "", "status": "completed", "conclusion": "success",
+   "headSha": "eee5555eee5555eee5555eee5555eee5555eeee", "updatedAt": "2026-08-03T09:00:00Z",
+   "url": "https://github.com/example/repo/actions/runs/5"}
+]

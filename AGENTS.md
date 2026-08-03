@@ -14,7 +14,7 @@ Root is the argument given to you, or the current working directory if none was 
 python3 <repo-clone-path>/codemap.py scan <root>
 ```
 
-This prints JSON: `{"tree_summary": ..., "file_edges": [{"src": ..., "dst": ..., "kind": "import"}, ...], "infra": ..., "uncached": [{"path": ..., "sha1": ...}, ...]}`. Read it. `uncached` lists every source file whose content hash isn't in the label cache yet (new file, or changed since it was last labeled). `file_edges` is the full, exact set of import edges the scanner found; this is where arrow keys in step 3 come from, do not invent or rename them.
+This prints JSON: `{"tree_summary": ..., "file_edges": [{"src": ..., "dst": ..., "kind": "import"}, ...], "infra": ..., "iac": {"resources": [...], "roles": [...], "connections": [...], "deployed": {}}, "uncached": [{"path": ..., "sha1": ...}, ...]}`. Read it. `iac.deployed` is always `{}` here: `scan` is purely local and never fetches deployed state. It is `render` that fills it in (from `gh run list`, when `gh` is available), so don't expect CI status from a scan and don't write labels against it. `uncached` lists every source file whose content hash isn't in the label cache yet (new file, or changed since it was last labeled). `file_edges` is the full, exact set of import edges the scanner found; this is where arrow keys in step 3 come from, do not invent or rename them. `iac` is the normalized infrastructure model (`lib/iac.py`, empty lists when the repo has no Terraform/CFN/SAM/serverless/compose/k8s/CDK sources); this is where step 4's role and connection ids come from.
 
 **2. If `uncached` is non-empty, label those files.**
 
@@ -74,7 +74,34 @@ cache["overview"] = new_overview            # {summary, externals: {host: {why}}
 save(root, cache)
 ```
 
-**4. Render and open.**
+**4. If the repo has infrastructure, add infra whys.**
+
+`codemap.py scan <root>`'s `iac` field (step 1) carries `roles` and `connections` whenever the scanner found Terraform, CloudFormation/SAM/serverless.yml, docker-compose, k8s, or CDK sources. If both are empty, skip this step, nothing to label.
+
+For each entry in `iac.roles`, write a why: a plain, short reason the role exists, grounded in what its own `grants` and `attached_to` fields actually say (see Honesty rules). For an `iac.connections` entry whose `role` field is set, you may add a short label naming what that access is for.
+
+Merge into `<root>/.codemap/cache.json`'s optional `infra` section, same shape and merge discipline as step 3 (dict-update, don't overwrite):
+
+```json
+{
+  "infra": {
+    "roles": {"<role id>": {"why": "<max 12 words, why this role exists>"}},
+    "connections": {"<src id>→<dst id>": "<short label>"}
+  }
+}
+```
+
+`<role id>` comes straight from `iac.roles[].id`; `<src id>→<dst id>` from `iac.connections[].src` and `.dst`, joined with → exactly as they appear in the scan output, same rule as arrow keys in step 3.
+
+```python
+cache = load(root)
+infra = cache.setdefault("infra", {"roles": {}, "connections": {}})
+infra["roles"].update(new_role_whys)              # {role id: {why}}
+infra["connections"].update(new_connection_whys)   # {"src→dst": label}
+save(root, cache)
+```
+
+**5. Render and open.**
 
 ```bash
 python3 <repo-clone-path>/codemap.py render <root>
@@ -82,7 +109,9 @@ python3 <repo-clone-path>/codemap.py render <root>
 
 This prints the path to `<root>/.codemap/codemap.html`. Open it for the user (the map should end up visible on screen, not just referenced by path).
 
-**5. Offer the freshness hook once.**
+`render` is the only command that can touch the network, and only to ask `gh` for the latest GitHub Actions run per workflow (it needs `gh` on `PATH` and a `github.com` remote; otherwise it never fires). If the user wants a guaranteed-offline render, or the target repo is sensitive enough that you shouldn't be resolving its GitHub remote, pass `--no-gh`.
+
+**6. Offer the freshness hook once.**
 
 If this is the first time codemap has been run against this target repo and it's a git repository with at least one commit, offer once to install the freshness hook:
 
@@ -92,11 +121,11 @@ python3 <repo-clone-path>/codemap.py hook <root>
 
 If the target isn't a git repo (or has zero commits), don't offer the hook: tell the user staleness detection is timestamp-only for this repo.
 
-**6. Offer to gitignore `.codemap/`.**
+**7. Offer to gitignore `.codemap/`.**
 
 If the target repo has a `.gitignore` and it doesn't already exclude `.codemap/`, offer to add it. `.codemap/` contains a generated HTML file, a label cache, and a freshness sidecar, none of it belongs in version control.
 
-**7. Run the QA pass.**
+**8. Run the QA pass.**
 
 After rendering, if node + playwright are available, run `node <repo-clone-path>/qa/map-qa.mjs <root>/.codemap/codemap.html` and fix or report any FAIL before handing the map to the user; if playwright is unavailable, say the QA pass was skipped.
 
@@ -108,9 +137,12 @@ After rendering, if node + playwright are available, run `node <repo-clone-path>
 - Lenses: 2 to 4 per repo. Fewer than 2 isn't worth the cache entries; more than 4 stops being a map and starts being a list.
 - Overview summary: ≤ 60 words.
 - Every external host gets a WHY, even a short one ("error tracking", "object storage").
+- Infra role whys: ≤ 12 words, same discipline as file captions. Name what the role can actually do and why, not a paragraph.
 
 ## Honesty rules
 
 - **Never label an edge the scanner didn't emit.** Arrow labels only apply to edges present in the scan output (imports the parser actually found). If you notice a real dependency the scanner missed (a dynamic import, a Go blank import, a call the regex parser can't see), do not add an arrow for it: that's a scanner gap, not a labeling job. Mention it to the user in passing if it matters.
 - **Captions describe what code does, not what you'd like it to do or think it should do.** No speculation about intent, no aspirational descriptions, no marketing language.
 - **If a language isn't supported** (anything outside Python, TS/JS, Go), say so plainly rather than leaving it looking silently blank.
+- **Never invent a permission.** An infra role why can only describe grants and attachments the parser actually found in that role's `grants` / `attached_to` fields. If you can't tell why a role exists from what's parsed, say so plainly ("grants not resolved from source") rather than guessing at intent.
+- **Never write an infra why for an id the scan didn't produce.** Same rule as arrows: a role or connection why keys off an id present in the current `iac` output, never a renamed or deleted one, never one you think should exist.

@@ -1,11 +1,21 @@
-import unittest, tempfile
+import json, unittest, tempfile
 from pathlib import Path
+from unittest import mock
 from lib.scan import scan
 from lib.edges import build
 from lib.infra import scan_infra
 from lib.render import render, write
 
 FIX = Path(__file__).parent / "fixtures" / "toyrepo"
+IAC_FIX = Path(__file__).parent / "fixtures" / "iacrepo"
+
+def _payload(html):
+    """The baked DATA object, parsed back out of the rendered page."""
+    marker = "const DATA = "
+    i = html.index(marker) + len(marker)
+    raw = html[i:html.index("\n", i)].rstrip().rstrip(";")
+    return json.loads(raw)
+
 
 class TestRender(unittest.TestCase):
     def _html(self):
@@ -101,6 +111,90 @@ class TestRender(unittest.TestCase):
         self.assertIn('"name": "app", "kind": "dir"', html)
         self.assertIn('"name": "web", "kind": "dir"', html)
         self.assertIn('"name": "main.go", "kind": "file"', html)
+
+class TestRenderIac(unittest.TestCase):
+    """DATA.iac: the System tab's infra model is baked by the renderer itself
+    (scan_iac over the repo root), so every map carries it without a CLI change."""
+
+    def _iac_html(self, labels=None):
+        tree = scan(IAC_FIX)
+        build(tree, IAC_FIX)
+        return render(tree, scan_infra(IAC_FIX), labels or {}, IAC_FIX, "vscode")
+
+    def test_iac_model_baked(self):
+        html = self._iac_html()
+        self.assertIn('"iac"', html)
+        # a role, its grant actions and its grant target all reach the payload
+        self.assertIn('"lambda_exec"', html)
+        self.assertIn('"dynamodb:PutItem"', html)
+        self.assertIn('"tf:.::aws_dynamodb_table.orders"', html)
+        # a via-role connection carries its mechanism and the role name
+        self.assertIn('"via role"', html)
+        # resources keep their file:line evidence
+        self.assertIn('"source_file": "main.tf"', html)
+
+    def test_zero_iac_repo_bakes_empty_model(self):
+        # toyrepo has no IaC at all: the model is present but empty, which is
+        # what the template keys off to keep rendering the legacy System view.
+        tree = scan(FIX)
+        build(tree, FIX)
+        html = render(tree, scan_infra(FIX), {}, FIX, "vscode")
+        self.assertIn('"iac": {"resources": [], "roles": [], "connections": [], "deployed": {}}', html)
+
+    def test_deployed_state_baked_from_fetch_deployed(self):
+        # render() calls lib.deployed.fetch_deployed(root) and bakes its result
+        # onto iac["deployed"]; fetch_deployed itself is best-effort/network-y
+        # (see test_deployed.py), so here it's mocked to prove only the wiring.
+        fake = {"workflows": [{"workflow": "deploy", "status": "completed",
+                                "conclusion": "success", "sha": "abc1234",
+                                "at": "2026-08-01T00:00:00Z", "url": "https://x"}],
+                "fetched_at": "2026-08-01T00:05:00Z"}
+        with mock.patch("lib.render.fetch_deployed", return_value=fake):
+            html = self._iac_html()
+        deployed = _payload(html)["iac"]["deployed"]
+        self.assertEqual(deployed, fake)
+
+    def test_no_gh_skips_the_fetch_entirely(self):
+        # --no-gh is the documented opt-out from the only network call a
+        # render can make, so it must not merely discard the result: the
+        # fetch must never happen (a cached-but-stale deployed.json read
+        # would still count as "not skipped" for the payload check alone).
+        fake = {"workflows": [{"workflow": "deploy", "status": "completed",
+                                "conclusion": "success", "sha": "abc1234",
+                                "at": "2026-08-01T00:00:00Z", "url": "https://x"}],
+                "fetched_at": "2026-08-01T00:05:00Z"}
+        tree = scan(IAC_FIX)
+        build(tree, IAC_FIX)
+        with mock.patch("lib.render.fetch_deployed", return_value=fake) as fetched:
+            html = render(tree, scan_infra(IAC_FIX), {}, IAC_FIX, "vscode", fetch_gh=False)
+        fetched.assert_not_called()
+        self.assertEqual(_payload(html)["iac"]["deployed"], {})
+
+    def test_infra_labels_merge_onto_roles_and_connections(self):
+        labels = {
+            "infra": {
+                "roles": {"tf:.::aws_iam_role.lambda_exec": {"why": "lets the order lambda touch orders"}},
+                "connections": {"tf:.::aws_lambda_function.process_order→tf:.::aws_dynamodb_table.orders":
+                                "writes each approved order"},
+            }
+        }
+        iac = _payload(self._iac_html(labels))["iac"]
+        role = next(r for r in iac["roles"] if r["id"] == "tf:.::aws_iam_role.lambda_exec")
+        self.assertEqual(role["why"], "lets the order lambda touch orders")
+        conn = next(c for c in iac["connections"]
+                    if c["src"] == "tf:.::aws_lambda_function.process_order"
+                    and c["dst"] == "tf:.::aws_dynamodb_table.orders")
+        self.assertEqual(conn["why"], "writes each approved order")
+        # an unlabeled role stays unlabeled rather than inheriting anything
+        other = next(r for r in iac["roles"] if r["id"] == "tf:.::aws_iam_role.reader_role")
+        self.assertNotIn("why", other)
+
+    def test_infra_labels_for_unknown_ids_are_ignored(self):
+        # a stale label key (renamed role) must not invent a role or crash
+        html = self._iac_html({"infra": {"roles": {"aws_iam_role.gone": {"why": "nope"}},
+                                          "connections": {"a→b": "nope either"}}})
+        self.assertIn('"iac"', html)
+
 
 if __name__ == "__main__":
     unittest.main()

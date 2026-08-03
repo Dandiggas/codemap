@@ -1,0 +1,14 @@
+service: orders-service
+
+provider:
+  name: aws
+  runtime: python3.12
+  iamRoleStatements:
+    - Effect: Allow
+      Action:
+        - s3:PutObject
+      Resource: arn:aws:s3:::orders-uploads-bucket/*
+
+functions:
+  uploadReceipt:
+    handler: handler.upload_receipt

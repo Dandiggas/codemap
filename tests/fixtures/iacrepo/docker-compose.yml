@@ -1,0 +1,19 @@
+services:
+  web:
+    image: myorg/web:latest
+    depends_on:
+      - redis
+    links:
+      - redis
+    volumes:
+      - shared-data:/data
+    environment:
+      REDIS_URL: redis://redis:6379
+
+  redis:
+    image: redis:7
+    volumes:
+      - shared-data:/data
+
+volumes:
+  shared-data:

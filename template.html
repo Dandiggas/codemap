@@ -126,6 +126,32 @@
   .warn .s-title { color: var(--amber); }
   .section-h { font-size: 11px; text-transform: uppercase; letter-spacing: 1.5px; color: var(--faint); margin: 18px 0 10px; font-family: var(--mono); }
 
+  /* System tab v2: infra graph (same dagre machinery as the Code tab, hosted in
+     its own positioned box so the pipeline strip can sit above it). */
+  .sysgraph { position: relative; width: 100%; }
+  .sys-legend { text-transform: none; letter-spacing: 0; color: var(--faint); margin-left: 10px; }
+  .box.sys-role { background: var(--panel); border-color: var(--amber-dim); border-style: dashed; }
+  .box.sys-role .name { color: var(--amber); }
+  .role-badge { color: var(--amber) !important; border: 1px solid var(--amber-dim); border-radius: 4px; padding: 1px 5px; }
+  /* edge kinds. These sit after the edge-lit/edge-dim rules on purpose: at equal
+     specificity the later rule wins, so a "via role" arrow keeps its amber dash
+     in both the resting and the lit state. Only stroke styling is touched, so
+     the calm/hover focus rules above still own opacity and display. */
+  .flow-line.edge-kind-role { stroke: var(--amber); stroke-dasharray: 6 4; }
+  .flow-label.edge-kind-role { fill: var(--amber); }
+  .flow-line.edge-kind-grant { stroke-dasharray: 3 4; }
+  .flow-line.edge-kind-assume { stroke-dasharray: 1 5; }
+  .dep-chip { font-family: var(--mono); font-size: 10.5px; text-transform: none; letter-spacing: 0; color: var(--green); border: 1px solid var(--edge); border-radius: 12px; padding: 2px 10px; margin-left: 10px; display: inline-block; }
+  .dep-chip.fail, .dep-chip.stale { color: var(--amber); border-color: var(--amber-dim); }
+  table.grants { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 11.5px; }
+  table.grants th { text-align: left; color: var(--faint); font-weight: 500; border-bottom: 1px solid var(--edge); padding: 4px 8px 4px 0; }
+  table.grants td { color: var(--muted); border-bottom: 1px solid var(--edge); padding: 5px 8px 5px 0; vertical-align: top; word-break: break-word; }
+  table.grants td:first-child { color: var(--text); }
+  .peek-list { list-style: none; font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+  .peek-list li { padding: 4px 0; border-bottom: 1px solid var(--edge); line-height: 1.5; }
+  .peek-list li b { color: var(--text); font-weight: 500; }
+  .peek-list .ev { color: var(--faint); }
+
   #peek { width: 0; overflow: hidden auto; transition: width .2s ease; border-left: 1px solid var(--edge); background: var(--panel); flex: none; }
   #peek.open { width: 460px; }
   .peek-inner { width: 460px; padding: 18px; }
@@ -4142,22 +4168,29 @@ function setEdgeFocus(svg, name) {
   });
   return touched;
 }
-function focusEdges(name) {
-  const svg = canvas.querySelector('svg');
+/* host-scoped so the Code tab (graph directly in #canvas) and the System tab
+   (graph in a #sysgraph box nested inside #canvas, under the pipeline strip)
+   share one interaction grammar. The .hovering flag still lands on #canvas
+   itself: the exclusive-focus CSS is written as "#canvas.hovering <descendant>"
+   and therefore covers a nested host without a second copy of those rules. */
+function focusEdgesIn(host, name) {
+  const svg = host.querySelector('svg');
   if (!svg) return;
   const touched = setEdgeFocus(svg, name);
   touched.add(name);
   canvas.classList.add('hovering');
-  canvas.querySelectorAll('.box[data-boxname]').forEach(b => {
+  host.querySelectorAll('.box[data-boxname]').forEach(b => {
     b.classList.toggle('box-dim', !touched.has(b.dataset.boxname));
   });
 }
-function clearEdgeFocus() {
-  const svg = canvas.querySelector('svg');
+function clearEdgeFocusIn(host) {
+  const svg = host.querySelector('svg');
   canvas.classList.remove('hovering');
   if (svg) setEdgeFocus(svg, null);
-  canvas.querySelectorAll('.box[data-boxname]').forEach(b => b.classList.remove('box-dim'));
+  host.querySelectorAll('.box[data-boxname]').forEach(b => b.classList.remove('box-dim'));
 }
+function focusEdges(name) { focusEdgesIn(canvas, name); }
+function clearEdgeFocus() { clearEdgeFocusIn(canvas); }
 
 /* ---------- dagre layout (Code tab) ----------
    The vendored dagre build at the top of this file lays every Code-tab level
@@ -4325,7 +4358,10 @@ function smoothPath(pts) {
 /* Calm-mode edge draw over dagre geometry. Same single-draw-path contract as
    drawEdges: every edge in the array produces exactly one path element (a
    straight center-to-center line if dagre somehow returned no route), pruning
-   is visibility-only, and labels sit at dagre's reserved label rect. */
+   is visibility-only, and labels sit at dagre's reserved label rect.
+   e.kind (System tab: "role" / "grant" / "assume" / "conn") adds an
+   edge-kind-<kind> class for stroke styling; e.click makes the edge's own label
+   a click target even though the svg root is pointer-events:none. */
 function drawEdgesDagre(svg, edges, edgePts, places) {
   const svgNS = 'http://www.w3.org/2000/svg';
   edges.forEach(e => {
@@ -4343,6 +4379,7 @@ function drawEdgesDagre(svg, edges, edgePts, places) {
       const parts = [base, lensLit ? 'edge-lit' : 'edge-dim'];
       if (hidden) parts.push('edge-hidden');
       if (lensLit) parts.push('edge-reveal');
+      if (e.kind) parts.push('edge-kind-' + e.kind);
       return parts.join(' ');
     };
     const tag = (el) => {
@@ -4372,6 +4409,13 @@ function drawEdgesDagre(svg, edges, edgePts, places) {
     tag(t);
     t.textContent = e.label;
     svg.appendChild(t);
+    if (e.click) {
+      [bg, t].forEach(el => {
+        el.style.pointerEvents = 'auto';   // re-enables hit testing under the svg root's pointer-events:none
+        el.style.cursor = 'pointer';
+        el.addEventListener('click', e.click);
+      });
+    }
   });
 }
 
@@ -4538,28 +4582,29 @@ function renderCode() {
   }
 }
 
-/* Dagre render for one Code-tab level: stage the boxes to measure them, lay the
-   level out, size the canvas to the result (the map pane is the scroller), then
-   pin each box. The svg goes in first so boxes paint above the arrows. */
-function renderCodeDagre(cur, kids, edges) {
-  const wrap = document.getElementById('mapwrap');
-  const availW = Math.max(360, canvas.clientWidth || 900);
-  // scroll-independent: both rects are viewport-relative, so their delta is the
-  // canvas's offset inside the pane whether or not the pane is scrolled.
-  const availH = Math.max(360, Math.floor(
-    wrap.clientHeight - (canvas.getBoundingClientRect().top - wrap.getBoundingClientRect().top) - 24));
-  const els = kids.map((k, idx) => {
-    const el = makeBox(k, cur, idx, null);
-    el.dataset.boxname = k.name;
-    canvas.appendChild(el);
-    return el;
-  });
+/* Shared dagre graph render, used by the Code tab (one drill level, host =
+   #canvas) and the System tab (the infra graph, host = #sysgraph). Stage the
+   boxes inside the host to measure them at their natural size, walk the spacing
+   ladder, size the host to the result (the map pane is the scroller), then pin
+   each box and wire its hover focus. The svg goes in first so boxes paint above
+   the arrows.
+
+   items: [{name, el}] - box elements already built by the caller and NOT yet in
+   the DOM; el.dataset.boxname must be set for hover focus to find them.
+   edges: [{source, target, label?, weight?, kind?, lensLit?, hidden?, click?}],
+   endpoints named by items[].name.
+   opts.tighten forces the spacing ladder on regardless of box count (the System
+   tab's infra graph is many small disconnected stacks, which sprawl badly at the
+   generous rung a same-sized Code level actually needs). */
+function renderDagreGraph(host, items, edges, availW, availH, opts) {
+  const kids = items.map(it => ({ name: it.name }));
+  const els = items.map(it => { host.appendChild(it.el); return it.el; });
   // Walk the spacing ladder until the graph fits the envelope: a level should
   // use the page, not sprawl across screens of empty canvas. Big levels skip
   // the walk and stay on the generous rung (they were always going to scroll).
   const targetW = DG_TARGET_W * window.innerWidth;
   const targetArea = DG_TARGET_AREA * window.innerWidth * window.innerHeight;
-  const tighten = kids.length <= DG_TIGHTEN_MAX;
+  const tighten = (opts && opts.tighten) || items.length <= DG_TIGHTEN_MAX;
   let L = null;
   for (let i = 0; i < DG_LADDER.length; i++) {
     L = layoutLevelDagre(kids, edges, measureBoxes(els, DG_LADDER[i].boxW),
@@ -4567,19 +4612,40 @@ function renderCodeDagre(cur, kids, edges) {
     if (!tighten) break;
     if (L.contentW <= targetW && L.contentW * L.contentH <= targetArea) break;
   }
-  canvas.style.width = L.canvasW + 'px';
-  canvas.style.height = L.canvasH + 'px';
+  host.style.width = L.canvasW + 'px';
+  host.style.height = L.canvasH + 'px';
   const svg = mkSvg(L.canvasW, L.canvasH);
   drawEdgesDagre(svg, edges, L.edgePts, L.places);
-  canvas.insertBefore(svg, canvas.firstChild);
-  kids.forEach((k, i) => {
-    const pl = L.places[k.name];
+  host.insertBefore(svg, host.firstChild);
+  items.forEach((it, i) => {
+    const pl = L.places[it.name];
     const el = els[i];
     if (!pl) { el.remove(); return; }
     applyBoxRect(el, pl.x, pl.y, pl.w, pl.h);
-    el.addEventListener('mouseenter', () => focusEdges(k.name));
-    el.addEventListener('mouseleave', clearEdgeFocus);
+    el.addEventListener('mouseenter', () => focusEdgesIn(host, it.name));
+    el.addEventListener('mouseleave', () => clearEdgeFocusIn(host));
   });
+  return L;
+}
+/* Available room for a graph hosted at `host`, in the map pane. Both rects are
+   viewport-relative, so their delta is the host's offset inside the pane
+   whether or not the pane is scrolled. */
+function availFor(host, minW, minH) {
+  const wrap = document.getElementById('mapwrap');
+  return {
+    w: Math.max(minW, host.clientWidth || canvas.clientWidth || 900),
+    h: Math.max(minH, Math.floor(
+      wrap.clientHeight - (host.getBoundingClientRect().top - wrap.getBoundingClientRect().top) - 24)),
+  };
+}
+function renderCodeDagre(cur, kids, edges) {
+  const avail = availFor(canvas, 360, 360);
+  const items = kids.map((k, idx) => {
+    const el = makeBox(k, cur, idx, null);
+    el.dataset.boxname = k.name;
+    return { name: k.name, el };
+  });
+  renderDagreGraph(canvas, items, edges, avail.w, avail.h);
 }
 
 function renderLensBar() {
@@ -4614,9 +4680,15 @@ function openPeek(fn, parent) {
       <button class="btn" onclick="toast('caller/callee lookup not in v1')">Who calls this?</button>
     </div>`;
   peekEl.classList.add('open');
-  setTimeout(() => activeTab === 'code' && renderCode(), 210);
+  setTimeout(reflowActiveTab, 210);
 }
-function closePeek() { peekEl.classList.remove('open'); setTimeout(() => activeTab === 'code' && renderCode(), 210); }
+/* the peek panel steals ~460px of pane width, so whichever graph tab is showing
+   has to be laid out again once its slide finishes */
+function reflowActiveTab() {
+  if (activeTab === 'code') renderCode();
+  else if (activeTab === 'system') renderSystem();
+}
+function closePeek() { peekEl.classList.remove('open'); setTimeout(reflowActiveTab, 210); }
 
 /* ---------- OVERVIEW TAB ---------- */
 // no premade overview layout ships with the data; lay externals out in two
@@ -4687,6 +4759,255 @@ function renderOverview() {
 function stageBoxHtml(s) {
   return `<div class="stage-box${s.warn ? ' warn' : ''}"><div class="s-title">${esc(s.title)}</div><div class="s-sub">${esc(s.sub)}</div></div>`;
 }
+/* ---------- IaC model (DATA.iac, from lib/iac.py + lib/deployed.py) ----------
+   {resources:[{id,rtype,name,source_file,line,attrs}],
+    roles:[{id,name,grants:[{actions,on}],attached_to,source_file,line,why?}],
+    connections:[{src,dst,mechanism,role,evidence,why?}],
+    deployed:{workflows:[{workflow,status,conclusion,sha,at,url}],fetched_at}}
+   Standing invariant from the parsers: every connection endpoint is a resource
+   id. Role boxes are extra nodes this file adds, so role-attached arrows resolve
+   through the same node index and can never point at nothing. `deployed` comes
+   from a `gh run list` fetch (lib/deployed.py) and is empty ({}) whenever there's
+   no gh on PATH, no GitHub remote, or nothing cached from a prior fetch. */
+function iacModel() {
+  const m = DATA.iac || {};
+  return { resources: m.resources || [], roles: m.roles || [],
+           connections: m.connections || [], deployed: m.deployed || {} };
+}
+function hasIac() {
+  const m = iacModel();
+  return m.resources.length > 0 || m.roles.length > 0;
+}
+
+/* One box per infrastructure thing. A role is very often ALSO a resource (an
+   aws_iam_role, an AWS::IAM::Role, a k8s ServiceAccount): same id, or the same
+   declaration seen twice by two passes (same file, same line, same name). Those
+   collapse onto one box carrying the role's grants; `alias` remaps the role's
+   own id onto the box that absorbed it so role edges still resolve. */
+function buildIacNodes() {
+  const { resources, roles } = iacModel();
+  const nodes = [], byId = {}, alias = {};
+  resources.forEach(r => {
+    // Belt and braces: ids are unique by construction (every parser in
+    // lib/iac.py qualifies them, and tests/test_iac.py pins that as a
+    // standing invariant). If one ever did repeat, overwriting byId would
+    // stack two boxes at one set of coordinates and show only the last
+    // writer's data - drop the duplicate instead.
+    if (byId[r.id]) return;
+    const n = { id: r.id, kind: 'resource', res: r, role: null };
+    nodes.push(n); byId[r.id] = n;
+  });
+  const declKey = o => `${o.source_file}:${o.line}:${o.name}`;
+  const byDecl = {};
+  resources.forEach(r => {
+    const k = declKey(r);
+    byDecl[k] = Object.prototype.hasOwnProperty.call(byDecl, k) ? null : r.id;  // ambiguous -> no merge
+  });
+  roles.forEach(role => {
+    let n = byId[role.id];
+    if (!n) {
+      const hit = byDecl[declKey(role)];
+      if (hit && byId[hit]) n = byId[hit];
+    }
+    if (n) { n.kind = 'role'; n.role = role; alias[role.id] = n.id; }
+    else {
+      n = { id: role.id, kind: 'role', res: null, role: role };
+      nodes.push(n); byId[role.id] = n; alias[role.id] = role.id;
+    }
+  });
+  return { nodes, byId, alias };
+}
+
+function iacResolver(byId, alias) {
+  return id => (byId[id] ? id : (alias[id] && byId[alias[id]] ? alias[id] : null));
+}
+function actionsSummary(actions) {
+  const a = actions || [];
+  if (!a.length) return 'no actions parsed';
+  return a.slice(0, 2).join(', ') + (a.length > 2 ? ` +${a.length - 2}` : '');
+}
+/* connection.role is a role NAME, not an id; prefer the role that actually
+   lists this connection's source in its attached_to before falling back. */
+function roleForConnection(c) {
+  const named = iacModel().roles.filter(r => r.name === c.role);
+  return named.find(r => (r.attached_to || []).indexOf(c.src) !== -1) || named[0] || null;
+}
+
+/* Arrows. One drawn edge per (src,dst) pair - the parsers legitimately emit
+   several connections between the same two boxes (compose: depends_on + links +
+   network dns + shared volume), and dagre is a simple graph. Merged mechanisms
+   are summarised on the label and listed in full in the peek. Role edges
+   (attached_to -> role "assumes", role -> grant target "grants: ...") are added
+   only for pairs no connection already covers, and only when the grant target
+   resolves to a real box; unresolvable grants (managed policy arns, raw bucket
+   arns, k8s resource names) live in the role's peek instead. */
+function buildIacEdges(byId, alias) {
+  const { connections, roles } = iacModel();
+  const resolve = iacResolver(byId, alias);
+  const pairs = new Map();
+  const key = (s, d) => s + ' ' + d;
+  connections.forEach(c => {
+    const s = resolve(c.src), d = resolve(c.dst);
+    if (!s || !d || s === d) return;
+    const k = key(s, d);
+    if (!pairs.has(k)) pairs.set(k, { source: s, target: d, conns: [] });
+    pairs.get(k).conns.push(c);
+  });
+  const edges = [];
+  pairs.forEach(p => {
+    const viaRoles = [...new Set(p.conns.filter(c => c.role).map(c => c.role))];
+    const mechs = [...new Set(p.conns.map(c => c.mechanism).filter(Boolean))];
+    const isRole = viaRoles.length > 0;
+    const label = isRole
+      ? 'via ' + viaRoles[0] + (viaRoles.length > 1 ? ` +${viaRoles.length - 1}` : '')
+      : mechs.slice(0, 2).join(', ') + (mechs.length > 2 ? ` +${mechs.length - 2}` : '');
+    const e = { source: p.source, target: p.target, label: label || 'connects',
+                kind: isRole ? 'role' : 'conn', weight: p.conns.length, conns: p.conns };
+    if (isRole) {
+      const role = roleForConnection(p.conns.find(c => c.role));
+      const rid = role && resolve(role.id);
+      if (rid) e.click = () => openIacPeek(byId[rid]);
+    }
+    edges.push(e);
+  });
+  const taken = new Set([...pairs.keys()]);
+  const addRoleEdge = (s, d, kind, label, role) => {
+    if (!s || !d || s === d || taken.has(key(s, d))) return;
+    taken.add(key(s, d));
+    edges.push({ source: s, target: d, kind: kind, label: label, weight: 1,
+                 click: () => openIacPeek(byId[resolve(role.id)]) });
+  };
+  roles.forEach(role => {
+    const rid = resolve(role.id);
+    if (!rid) return;
+    (role.attached_to || []).forEach(a => addRoleEdge(resolve(a), rid, 'assume', 'assumes', role));
+    (role.grants || []).forEach(g =>
+      addRoleEdge(rid, resolve(g.on), 'grant', 'grants: ' + actionsSummary(g.actions), role));
+  });
+  return edges;
+}
+
+function iacBoxLabel(node) {
+  return node.kind === 'role' ? (node.role.name || node.role.id) : node.res.name;
+}
+function makeIacBox(node, idx) {
+  const b = document.createElement('div');
+  const isRole = node.kind === 'role';
+  const src = isRole && !node.res ? node.role : node.res;
+  b.className = 'box' + (isRole ? ' sys-role' : '');
+  b.style.animationDelay = Math.min(idx * 30, 420) + 'ms';
+  const rtype = node.res ? node.res.rtype : 'role';
+  const why = isRole ? node.role.why : null;
+  b.innerHTML = `
+    <div class="name">${esc(iacBoxLabel(node))} <span class="kind${isRole ? ' role-badge' : ''}">${esc(isRole ? 'role' : rtype)}</span></div>
+    ${isRole && node.res ? `<div class="stat">${esc(rtype)}</div>` : ''}
+    ${why ? `<div class="caption">${esc(why)}</div>` : ''}
+    ${isRole ? `<div class="caption">${esc((node.role.grants || []).length)} grant${(node.role.grants || []).length === 1 ? '' : 's'}</div>` : ''}
+    <div class="stat">${esc(src.source_file)}:${esc(src.line)}</div>`;
+  b.onclick = () => openIacPeek(node);
+  return b;
+}
+
+let iacIndex = null;  // {nodes, byId, alias} for the currently rendered infra graph
+function iacDisplayName(id) {
+  const n = iacIndex && iacIndex.byId[id];
+  return n ? iacBoxLabel(n) : id;
+}
+function openIacPeek(node) {
+  if (!node) return;
+  const isRole = node.kind === 'role';
+  const src = isRole && !node.res ? node.role : node.res;
+  const meta = DATA.meta;
+  const href = `${meta.editor_scheme}://file${meta.repo_abs}/${src.source_file}:${src.line}`;
+  let body;
+  if (isRole) {
+    const grants = node.role.grants || [];
+    const rows = grants.length
+      ? grants.map(g => `<tr><td>${esc((g.actions || []).join(', '))}</td><td>${esc(iacDisplayName(g.on))}</td></tr>`).join('')
+      : '<tr><td colspan="2">No grants parsed from source</td></tr>';
+    const attached = (node.role.attached_to || []).length
+      ? node.role.attached_to.map(a => `<li><b>${esc(iacDisplayName(a))}</b></li>`).join('')
+      : '<li>Nothing attached to this role</li>';
+    body = `
+      <div class="section-h">Why</div>
+      <div class="caption">${esc(node.role.why || 'No why written yet')}</div>
+      <div class="section-h">Grants</div>
+      <table class="grants"><thead><tr><th>Actions</th><th>On</th></tr></thead><tbody>${rows}</tbody></table>
+      <div class="section-h">Attached to</div>
+      <ul class="peek-list">${attached}</ul>`;
+  } else {
+    const conns = iacModel().connections;
+    const line = (c, dir) => {
+      const other = iacDisplayName(dir === 'out' ? c.dst : c.src);
+      // "via role" is the mechanism name; naming the role IS the mechanism here,
+      // so don't print both ("via role · via lambda_exec").
+      const mech = c.role
+        ? (c.mechanism === 'via role' ? `via ${c.role}` : `${c.mechanism} · via ${c.role}`)
+        : c.mechanism;
+      const why = c.why ? ` · ${c.why}` : '';
+      return `<li>${dir === 'out' ? '→' : '←'} <b>${esc(other)}</b> · ${esc(mech)}${esc(why)}` +
+             `<br><span class="ev">${esc(c.evidence || 'no evidence line')}</span></li>`;
+    };
+    const outs = conns.filter(c => c.src === node.id).map(c => line(c, 'out'));
+    const ins = conns.filter(c => c.dst === node.id).map(c => line(c, 'in'));
+    const list = outs.concat(ins);
+    body = `
+      <div class="section-h">Connections</div>
+      <ul class="peek-list">${list.join('') || '<li>No connections parsed for this resource</li>'}</ul>`;
+  }
+  peekInner.innerHTML = `
+    <div class="peek-head"><span class="fn">${esc(iacBoxLabel(node))}</span>` +
+      `<span class="kind${isRole ? ' role-badge' : ''}">${esc(isRole ? 'role' : node.res.rtype)}</span>` +
+      `<span class="peek-close" onclick="closePeek()">×</span></div>
+    <div class="peek-path">${esc(src.source_file)}:${esc(src.line)}</div>
+    ${body}
+    <div class="peek-actions"><a class="btn primary" href="${esc(href)}">Open in editor ↗</a></div>`;
+  peekEl.classList.add('open');
+  setTimeout(reflowActiveTab, 210);
+}
+
+/* Deployed state: DATA.iac.deployed.workflows, from lib/deployed.py's `gh run
+   list` fetch, newest run per workflow. Dormant until there is data: no chip
+   at all when the list is empty (no gh on PATH, no GitHub remote, or nothing
+   cached yet from a prior fetch — see lib/deployed.py). One chip per
+   workflow, colored by conclusion, with a separate amber flag if that run's
+   commit isn't the one this map was generated from. */
+function relativeAge(iso) {
+  if (!iso) return '';
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return '';
+  const mins = Math.max(0, Math.round((Date.now() - t) / 60000));
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.round(hours / 24)}d ago`;
+}
+/* .codemap/deployed.json is a cache file on disk, baked in verbatim on the
+   next render: treat it as untrusted input, not as our own output. Two
+   guards below - a non-array `workflows` (hand-edited, truncated write) must
+   not take the whole System tab down, and only an http(s) URL may become a
+   link (a `javascript:` URL in that file would otherwise execute on click). */
+function deployedChipHtml(dep) {
+  const workflows = Array.isArray(dep && dep.workflows) ? dep.workflows : [];
+  if (!workflows.length) return '';
+  const mapSha = DATA.meta.commit || '';
+  return workflows.map(w => {
+    const sha = String(w.sha || '');
+    const shortSha = sha.slice(0, 7);
+    // short vs. full sha: whichever is shorter must be a prefix of the other.
+    const mismatch = !!(shortSha && mapSha && !sha.startsWith(mapSha) && !mapSha.startsWith(shortSha));
+    const failed = !!w.conclusion && w.conclusion !== 'success';
+    const cls = 'dep-chip' + (failed ? ' fail' : '') + (mismatch ? ' stale' : '');
+    const age = relativeAge(w.at || (dep && dep.fetched_at));
+    const bits = [w.workflow, w.conclusion || w.status, shortSha, age].filter(Boolean).join(' · ');
+    const title = mismatch ? ' title="map generated from a different commit than last CI run"' : '';
+    const chip = `<span class="${cls}" data-workflow="${esc(w.workflow || '')}"${title}>${esc(bits)}</span>`;
+    const url = String(w.url == null ? '' : w.url);
+    return /^https?:\/\//i.test(url) ? `<a href="${esc(url)}">${chip}</a>` : chip;
+  }).join('');
+}
+
 function renderSystem() {
   ltitle.textContent = DATA.tree.name + ' · how it ships and where it runs';
   sumSlot.innerHTML = '';
@@ -4696,15 +5017,37 @@ function renderSystem() {
   const pipeline = DATA.infra.pipeline || [];
   const boundaries = DATA.infra.boundaries || [];
   const topology = DATA.labels && DATA.labels.system && DATA.labels.system.topology;
+  const infraGraph = hasIac() && hasDagre();
   const pipelineHtml = pipeline.map(stageBoxHtml).join('<span class="stage-arrow">→</span>');
   const boundariesHtml = boundaries.map(stageBoxHtml).join('');
+  // Zero-IaC repos keep the v1 view exactly: pipeline strip, then the
+  // boundaries/externals row. The infra graph replaces that row only when the
+  // scan actually found infrastructure to draw.
   canvas.innerHTML = `
-    <div class="section-h">Build &amp; deploy pipeline</div>
+    <div class="section-h">Build &amp; deploy pipeline${deployedChipHtml(iacModel().deployed)}</div>
     <div class="pipeline">${pipelineHtml || '<div class="stage-box"><div class="s-title">no pipeline detected</div></div>'}</div>
     ${topology ? `<div class="section-h">Runtime topology</div><div id="sys-topo" style="position:relative"></div>` : ''}
-    <div class="section-h">Boundaries &amp; secrets</div>
-    <div class="pipeline" style="gap:10px">${boundariesHtml || '<div class="stage-box"><div class="s-title">none detected</div></div>'}</div>`;
+    ${infraGraph
+      ? `<div class="section-h">Infrastructure &amp; access<span class="sys-legend">hover a box to isolate its arrows · dashed amber = access via a role</span></div>
+         <div class="sysgraph" id="sysgraph"></div>`
+      : `<div class="section-h">Boundaries &amp; secrets</div>
+         <div class="pipeline" id="sys-boundaries" style="gap:10px">${boundariesHtml || '<div class="stage-box"><div class="s-title">none detected</div></div>'}</div>`}`;
   if (topology) renderTopology(topology);
+  if (infraGraph) renderIacGraph();
+}
+
+function renderIacGraph() {
+  const host = document.getElementById('sysgraph');
+  if (!host) return;
+  iacIndex = buildIacNodes();
+  const edges = buildIacEdges(iacIndex.byId, iacIndex.alias);
+  const avail = availFor(host, 360, 320);
+  const items = iacIndex.nodes.map((n, i) => {
+    const el = makeIacBox(n, i);
+    el.dataset.boxname = n.id;
+    return { name: n.id, el };
+  });
+  renderDagreGraph(host, items, edges, avail.w, avail.h, { tighten: true });
 }
 
 // labels-provided runtime topology (Task 10 shape): { layout: {name:[x,y,w,h]}, edges: [{source,target,label}], captions: {name: text} }
@@ -4765,7 +5108,7 @@ function checkStaleBanner() {
 const HINTS = {
   overview: 'one glance: what it is, who it talks to, why',
   code: '<b>click</b> box = drill · <b>click</b> fn = peek code · breadcrumb = back',
-  system: 'pipeline · runtime topology · boundaries',
+  system: 'pipeline · infrastructure · <b>click</b> a role = what it grants, to what',
 };
 function switchTab(tab) {
   activeTab = tab;
