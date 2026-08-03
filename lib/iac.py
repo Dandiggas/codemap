@@ -9,6 +9,42 @@ CFN_SUFFIXES = (".yaml", ".yml", ".json")
 def empty_model() -> dict:
     return {"resources": [], "roles": [], "connections": [], "deployed": {}}
 
+# ---------------------------------------------------------------------------
+# group_of: the human-readable "source group" an id belongs to, used by the
+# System tab to tell environments/stacks apart (a multi-env Terraform repo
+# renders envs/prod and envs/dev on one canvas; without a group, nothing
+# distinguishes their boxes -- see TestTerraformMultiEnvIds above for the
+# id-uniqueness half of this reviewer repro).
+#
+#   tf   ids ("tf:<dirpath>::...")       -> the module directory ("envs/prod",
+#                                            "." becomes "terraform" since a
+#                                            bare "." reads as nothing in a chip)
+#   cfn/sls/compose/k8s/cdk ids          -> the source file path, extension
+#   ("<kind>:<relpath>::...")               stripped ("template.yaml" ->
+#                                            "template", "k8s/app.yaml" ->
+#                                            "k8s/app")
+#
+# Every parser's id already carries this qualifier (see the id-scheme note
+# above parse_terraform_files, and the matching notes at the top of
+# lib/iac_cfn.py / lib/iac_k8s.py / lib/iac_cdk.py); group_of only ever reads
+# it back out, it never has to re-derive anything the parsers didn't already
+# encode positionally.
+# ---------------------------------------------------------------------------
+
+def group_of(id: str) -> str:
+    """Human-readable source group for a resource/role id, or "" if id isn't
+    one of this module's qualified ids (defensive: never raises on odd input,
+    since a bad group must not take a render down)."""
+    if not id or "::" not in id:
+        return ""
+    prefix, _, _bare = id.partition("::")
+    kind, sep, qualifier = prefix.partition(":")
+    if not sep or not qualifier:
+        return ""
+    if kind == "tf":
+        return "terraform" if qualifier == "." else qualifier
+    return str(PurePosixPath(qualifier).with_suffix(""))
+
 def scan_iac(root) -> dict:
     """Scan a repo root for IaC sources and return the normalized model.
     Dispatches to the Terraform parser, the CFN/SAM/serverless.yml parser
@@ -100,6 +136,15 @@ def scan_iac(root) -> dict:
         model["resources"].extend(partial["resources"])
         model["roles"].extend(partial["roles"])
         model["connections"].extend(partial["connections"])
+
+    # group is a scan_iac-level concern, not a per-parser one: every parser's
+    # own unit tests (parse_terraform_text, parse_cdk_ts, ...) keep asserting
+    # bare model dicts, and only scan_iac's merged output is what the
+    # template ever renders.
+    for r in model["resources"]:
+        r["group"] = group_of(r["id"])
+    for r in model["roles"]:
+        r["group"] = group_of(r["id"])
     return model
 
 # ---------------------------------------------------------------------------

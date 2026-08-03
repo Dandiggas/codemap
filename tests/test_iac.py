@@ -1,6 +1,6 @@
 import json, unittest, tempfile
 from pathlib import Path
-from lib.iac import scan_iac, parse_terraform_text, parse_yaml_lite
+from lib.iac import scan_iac, parse_terraform_text, parse_yaml_lite, group_of
 from lib.iac_cfn import (
     is_cfn_doc, is_serverless_doc, parse_cfn_doc, parse_serverless_doc,
 )
@@ -10,6 +10,7 @@ from lib.iac_k8s import (
 from lib.iac_cdk import is_cdk_ts, is_cdk_py, parse_cdk_ts, parse_cdk_py
 
 FIX = Path(__file__).parent / "fixtures" / "iacrepo"
+FIX_MULTIENV = Path(__file__).parent / "fixtures" / "multienvrepo"
 
 class TestScanIacTerraform(unittest.TestCase):
     def test_all_resources_with_lines(self):
@@ -1575,6 +1576,180 @@ class TestTerraformSameDirCrossFile(unittest.TestCase):
                 "mechanism": "via role", "role": "worker",
                 "evidence": "infra/iam.tf:9",
             }])
+
+
+class TestGroupOf(unittest.TestCase):
+    """group_of pins the human-readable "source group" for each parser's id
+    scheme -- what the System tab's environment chips and badges key off.
+    Terraform groups by module directory (the "." root becomes the readable
+    "terraform", never a bare dot); every file-qualified parser (cfn/sls/
+    compose/k8s/cdk) groups by its source file with the extension stripped."""
+
+    def test_terraform_root_dir_reads_as_terraform(self):
+        self.assertEqual(group_of("tf:.::aws_s3_bucket.logs"), "terraform")
+
+    def test_terraform_nested_dir_is_the_dirpath(self):
+        self.assertEqual(group_of("tf:envs/prod::aws_iam_role.app"), "envs/prod")
+
+    def test_cfn_group_is_file_minus_extension(self):
+        self.assertEqual(group_of("cfn:template.yaml::OrdersTable"), "template")
+
+    def test_serverless_group_is_file_minus_extension(self):
+        self.assertEqual(group_of("sls:serverless.yml::uploadReceipt"), "serverless")
+
+    def test_compose_group_is_file_minus_extension(self):
+        self.assertEqual(group_of("compose:docker-compose.yml::web"), "docker-compose")
+
+    def test_k8s_group_is_file_minus_extension_keeping_its_subdir(self):
+        self.assertEqual(group_of("k8s:k8s/app.yaml::Deployment/app"), "k8s/app")
+
+    def test_cdk_group_is_file_minus_extension_keeping_its_subdir(self):
+        self.assertEqual(group_of("cdk:cdk/stack.ts::OrdersStack"), "cdk/stack")
+
+    def test_malformed_or_empty_id_yields_empty_group(self):
+        self.assertEqual(group_of(""), "")
+        self.assertEqual(group_of(None), "")
+        self.assertEqual(group_of("not-a-qualified-id"), "")
+        self.assertEqual(group_of("tf:missing-bare-part"), "")
+
+
+class TestScanIacBakesGroupPerParser(unittest.TestCase):
+    """scan_iac bakes "group" onto every resource/role dict (task: environment
+    visibility), one assertion per parser so a future id-scheme change to any
+    single parser can't silently drop its group without a test noticing."""
+
+    def test_group_present_on_every_resource_and_role(self):
+        m = scan_iac(FIX)
+        for r in m["resources"]:
+            self.assertIn("group", r, r["id"])
+            self.assertTrue(r["group"], f"empty group for {r['id']}")
+        for r in m["roles"]:
+            self.assertIn("group", r, r["id"])
+            self.assertTrue(r["group"], f"empty group for {r['id']}")
+
+    def test_terraform_group_is_terraform_at_repo_root(self):
+        m = scan_iac(FIX)
+        by_id = {r["id"]: r for r in m["resources"]}
+        self.assertEqual(by_id["tf:.::aws_lambda_function.process_order"]["group"], "terraform")
+
+    def test_cfn_group_is_the_template_file(self):
+        m = scan_iac(FIX)
+        by_id = {r["id"]: r for r in m["resources"]}
+        cfn_ids = [rid for rid in by_id if rid.startswith("cfn:template.yaml::")]
+        self.assertTrue(cfn_ids)
+        for rid in cfn_ids:
+            self.assertEqual(by_id[rid]["group"], "template")
+
+    def test_serverless_group_is_the_serverless_file(self):
+        m = scan_iac(FIX)
+        by_id = {r["id"]: r for r in m["resources"]}
+        sls_ids = [rid for rid in by_id if rid.startswith("sls:serverless.yml::")]
+        self.assertTrue(sls_ids)
+        for rid in sls_ids:
+            self.assertEqual(by_id[rid]["group"], "serverless")
+
+    def test_compose_group_is_the_compose_file(self):
+        m = scan_iac(FIX)
+        by_id = {r["id"]: r for r in m["resources"]}
+        compose_ids = [rid for rid in by_id if rid.startswith("compose:docker-compose.yml::")]
+        self.assertTrue(compose_ids)
+        for rid in compose_ids:
+            self.assertEqual(by_id[rid]["group"], "docker-compose")
+
+    def test_k8s_group_is_the_manifest_file(self):
+        m = scan_iac(FIX)
+        by_id = {r["id"]: r for r in m["resources"]}
+        k8s_ids = [rid for rid in by_id if rid.startswith("k8s:k8s/app.yaml::")]
+        self.assertTrue(k8s_ids)
+        for rid in k8s_ids:
+            self.assertEqual(by_id[rid]["group"], "k8s/app")
+
+    def test_cdk_group_is_the_stack_source_file(self):
+        m = scan_iac(FIX)
+        by_id = {r["id"]: r for r in m["resources"]}
+        ts_ids = [rid for rid in by_id if rid.startswith("cdk:cdk/stack.ts::")]
+        py_ids = [rid for rid in by_id if rid.startswith("cdk:cdk/stack.py::")]
+        self.assertTrue(ts_ids)
+        self.assertTrue(py_ids)
+        for rid in ts_ids + py_ids:
+            self.assertEqual(by_id[rid]["group"], "cdk/stack")
+
+
+class TestTerraformMultiEnvGroups(unittest.TestCase):
+    """Same reviewer repro (envs/prod vs envs/dev, same resource names) used
+    by TestTerraformMultiEnvIds above, this time pinning that the two
+    environments land in distinct GROUPS -- what actually drives the System
+    tab's environment chips, on top of the id-uniqueness that class already
+    covers. Not a subclass of TestTerraformMultiEnvIds on purpose: subclassing
+    would re-run its test_* methods a second time under this name."""
+
+    def _two_env_repo(self, td):
+        root = Path(td)
+        for env, action in (("prod", "s3:PutObject"), ("dev", "s3:GetObject")):
+            d = root / "envs" / env
+            d.mkdir(parents=True)
+            (d / "main.tf").write_text(TestTerraformMultiEnvIds.ENV_TF.format(env=env, action=action))
+        return root
+
+    def test_prod_and_dev_get_distinct_groups(self):
+        with tempfile.TemporaryDirectory() as td:
+            m = scan_iac(self._two_env_repo(td))
+            by_id = {r["id"]: r for r in m["resources"]}
+            self.assertEqual(by_id["tf:envs/prod::aws_s3_bucket.logs"]["group"], "envs/prod")
+            self.assertEqual(by_id["tf:envs/dev::aws_s3_bucket.logs"]["group"], "envs/dev")
+            groups = {r["group"] for r in m["resources"]}
+            self.assertEqual(groups, {"envs/prod", "envs/dev"})
+
+    def test_roles_carry_their_own_environment_group_too(self):
+        with tempfile.TemporaryDirectory() as td:
+            m = scan_iac(self._two_env_repo(td))
+            roles = {r["id"]: r for r in m["roles"]}
+            self.assertEqual(roles["tf:envs/prod::aws_iam_role.app"]["group"], "envs/prod")
+            self.assertEqual(roles["tf:envs/dev::aws_iam_role.app"]["group"], "envs/dev")
+
+
+class TestMultiEnvRepoFixture(unittest.TestCase):
+    """The on-disk QA surface for environment visibility (tests/fixtures/
+    multienvrepo): envs/prod/main.tf + envs/dev/main.tf, same resource names,
+    one role each, different grants -- rendered by codemap and driven through
+    the browser in qa/map-qa.mjs as the fourth QA surface. Pinned here at the
+    model level too so a parser regression shows up in the fast test suite,
+    not only in the (optional, playwright-dependent) QA pass."""
+
+    def test_two_environments_two_groups(self):
+        m = scan_iac(FIX_MULTIENV)
+        groups = {r["group"] for r in m["resources"]}
+        self.assertEqual(groups, {"envs/prod", "envs/dev"})
+
+    def test_same_resource_names_both_envs(self):
+        m = scan_iac(FIX_MULTIENV)
+        names_by_group = {}
+        for r in m["resources"]:
+            names_by_group.setdefault(r["group"], set()).add(r["name"])
+        self.assertEqual(names_by_group["envs/prod"], names_by_group["envs/dev"])
+        self.assertEqual(names_by_group["envs/prod"], {"app", "data", "app_role"})
+
+    def test_one_role_each_with_different_grants(self):
+        m = scan_iac(FIX_MULTIENV)
+        roles = {r["id"]: r for r in m["roles"]}
+        self.assertEqual(len(roles), 2)
+        prod = roles["tf:envs/prod::aws_iam_role.app_role"]
+        dev = roles["tf:envs/dev::aws_iam_role.app_role"]
+        self.assertEqual(prod["group"], "envs/prod")
+        self.assertEqual(dev["group"], "envs/dev")
+        prod_actions = sorted(prod["grants"][0]["actions"])
+        dev_actions = sorted(dev["grants"][0]["actions"])
+        self.assertEqual(prod_actions, ["dynamodb:DeleteItem", "dynamodb:GetItem", "dynamodb:PutItem"])
+        self.assertEqual(dev_actions, ["dynamodb:GetItem"])
+        self.assertNotEqual(prod_actions, dev_actions)
+
+    def test_no_cross_environment_connections(self):
+        m = scan_iac(FIX_MULTIENV)
+        self.assertTrue(m["connections"])
+        for c in m["connections"]:
+            env = "prod" if "prod" in c["src"] else "dev"
+            self.assertTrue(c["src"].startswith(f"tf:envs/{env}::"), c)
+            self.assertTrue(c["dst"].startswith(f"tf:envs/{env}::"), c)
 
 
 if __name__ == "__main__":

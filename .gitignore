@@ -5,3 +5,5 @@ __pycache__/
 !tests/fixtures/toyrepo/__pycache__/
 !tests/fixtures/toyrepo/__pycache__/*.pyc
 node_modules/
+package.json
+package-lock.json

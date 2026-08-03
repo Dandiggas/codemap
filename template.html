@@ -133,6 +133,29 @@
   .box.sys-role { background: var(--panel); border-color: var(--amber-dim); border-style: dashed; }
   .box.sys-role .name { color: var(--amber); }
   .role-badge { color: var(--amber) !important; border: 1px solid var(--amber-dim); border-radius: 4px; padding: 1px 5px; }
+  /* every System box's source group ("envs/prod", "terraform", "k8s/app", ...)
+     -- muted mono chip, same shape as .mini, sitting under the name so it never
+     fights the name/kind row for width. Present on every box regardless of
+     whether the environments chip row (below) is showing: a single-env repo
+     still benefits from knowing which file/dir a box came from. */
+  .box .group-badge {
+    font-family: var(--mono); font-size: 9.5px; color: var(--faint);
+    border: 1px solid var(--edge); border-radius: 4px; padding: 1px 5px;
+    align-self: flex-start; background: var(--panel);
+  }
+  /* environments chip row: only rendered when the scan found more than one
+     distinct group, same interaction grammar as .lensbar/.lens on the Code
+     tab (clicking toggles, exclusive-with-hover via the shared lensLit/
+     setEdgeFocus mechanism -- see renderEnvBar / renderIacGraph). */
+  /* unlike #lensbar (a fixed chrome element outside #mapwrap, so it needs its
+     own 22px horizontal padding to line up with the header), #envbar is built
+     inline inside #canvas's innerHTML -- #mapwrap already supplies that 22px
+     inset, so envbar itself carries only vertical spacing. */
+  .envbar { display: flex; align-items: center; gap: 8px; padding: 2px 0 14px; flex-wrap: wrap; }
+  .envbar .label { font-size: 11px; text-transform: uppercase; letter-spacing: 1.5px; color: var(--faint); margin-right: 6px; }
+  .env-chip { font-family: var(--mono); font-size: 12px; color: var(--muted); border: 1px solid var(--edge); border-radius: 20px; padding: 4px 12px; cursor: pointer; transition: all .15s; }
+  .env-chip:hover { color: var(--text); border-color: var(--amber-dim); }
+  .env-chip.active { color: #10100c; background: var(--amber); border-color: var(--amber); font-weight: 600; }
   /* edge kinds. These sit after the edge-lit/edge-dim rules on purpose: at equal
      specificity the later rule wins, so a "via role" arrow keeps its amber dash
      in both the resting and the lit state. Only stroke styling is touched, so
@@ -4426,6 +4449,7 @@ let path = [DATA.tree];
 let activeLens = null;
 let activeTab = 'overview';
 let pruneState = { node: null, showAll: false }; // per-level edge-pruning toggle state (Code tab)
+let activeGroup = null; // System tab: active environment/source-group chip, or null
 
 // lenses are {name: [repo-relative paths]}; a node is lit when the active
 // lens's path list contains its own path (file: exact match) or a path
@@ -4890,16 +4914,41 @@ function buildIacEdges(byId, alias) {
 function iacBoxLabel(node) {
   return node.kind === 'role' ? (node.role.name || node.role.id) : node.res.name;
 }
+/* the source group a node belongs to ("envs/prod", "terraform", "k8s/app",
+   ...), baked onto every resource/role dict by lib/iac.py's scan_iac -- see
+   group_of there. A merged role+resource node (see buildIacNodes) carries
+   the same group on both halves, so either read agrees. */
+function iacNodeGroup(node) {
+  if (!node) return '';
+  return (node.res && node.res.group) || (node.role && node.role.group) || '';
+}
+/* distinct groups present in this System-tab render, sorted for a stable chip
+   order. Read straight off iacModel() rather than the merged node list so
+   renderSystem can decide the chip row's existence before buildIacNodes runs. */
+function iacGroups() {
+  const { resources, roles } = iacModel();
+  const set = new Set();
+  resources.forEach(r => { if (r.group) set.add(r.group); });
+  roles.forEach(r => { if (r.group) set.add(r.group); });
+  return [...set].sort();
+}
 function makeIacBox(node, idx) {
   const b = document.createElement('div');
   const isRole = node.kind === 'role';
   const src = isRole && !node.res ? node.role : node.res;
-  b.className = 'box' + (isRole ? ' sys-role' : '');
+  const group = iacNodeGroup(node);
+  // same lit/dimmed grammar as the Code tab's lens (see makeBox / nodeLit):
+  // an active group lights its own boxes and demotes everything else to the
+  // .45 dim floor, only when an environments chip row exists to drive it.
+  const groupLit = activeGroup ? group === activeGroup : null;
+  b.className = 'box' + (isRole ? ' sys-role' : '') +
+    (groupLit === true ? ' lit' : (activeGroup && groupLit !== true ? ' dimmed' : ''));
   b.style.animationDelay = Math.min(idx * 30, 420) + 'ms';
   const rtype = node.res ? node.res.rtype : 'role';
   const why = isRole ? node.role.why : null;
   b.innerHTML = `
     <div class="name">${esc(iacBoxLabel(node))} <span class="kind${isRole ? ' role-badge' : ''}">${esc(isRole ? 'role' : rtype)}</span></div>
+    ${group ? `<div class="group-badge">${esc(group)}</div>` : ''}
     ${isRole && node.res ? `<div class="stat">${esc(rtype)}</div>` : ''}
     ${why ? `<div class="caption">${esc(why)}</div>` : ''}
     ${isRole ? `<div class="caption">${esc((node.role.grants || []).length)} grant${(node.role.grants || []).length === 1 ? '' : 's'}</div>` : ''}
@@ -5018,6 +5067,13 @@ function renderSystem() {
   const boundaries = DATA.infra.boundaries || [];
   const topology = DATA.labels && DATA.labels.system && DATA.labels.system.topology;
   const infraGraph = hasIac() && hasDagre();
+  const groups = infraGraph ? iacGroups() : [];
+  // a chip row only earns its place when there's actually more than one
+  // group to distinguish; a single-group repo keeps its badges (set in
+  // makeIacBox) but shows no row, and any stale activeGroup from a
+  // previously-rendered multi-group map is cleared so it can't leave every
+  // box dimmed with nothing to undim it.
+  if (groups.length <= 1) activeGroup = null;
   const pipelineHtml = pipeline.map(stageBoxHtml).join('<span class="stage-arrow">→</span>');
   const boundariesHtml = boundaries.map(stageBoxHtml).join('');
   // Zero-IaC repos keep the v1 view exactly: pipeline strip, then the
@@ -5029,18 +5085,59 @@ function renderSystem() {
     ${topology ? `<div class="section-h">Runtime topology</div><div id="sys-topo" style="position:relative"></div>` : ''}
     ${infraGraph
       ? `<div class="section-h">Infrastructure &amp; access<span class="sys-legend">hover a box to isolate its arrows · dashed amber = access via a role</span></div>
+         ${groups.length > 1 ? `<div class="envbar" id="envbar"></div>` : ''}
          <div class="sysgraph" id="sysgraph"></div>`
       : `<div class="section-h">Boundaries &amp; secrets</div>
          <div class="pipeline" id="sys-boundaries" style="gap:10px">${boundariesHtml || '<div class="stage-box"><div class="s-title">none detected</div></div>'}</div>`}`;
   if (topology) renderTopology(topology);
-  if (infraGraph) renderIacGraph();
+  if (infraGraph) {
+    if (groups.length > 1) renderEnvBar(groups);
+    renderIacGraph();
+  }
+}
+
+/* Environments chip row (System tab): same interaction grammar as the Code
+   tab's #lensbar (renderLensBar) -- click toggles the active group, a second
+   click on the same chip clears it. Only rendered when renderSystem found
+   more than one distinct group. */
+function renderEnvBar(groups) {
+  const bar = document.getElementById('envbar');
+  if (!bar) return;
+  bar.innerHTML = `<span class="label">Environments</span>` + groups.map(g =>
+    `<span class="env-chip${activeGroup === g ? ' active' : ''}" data-group="${esc(g)}">${esc(g)}</span>`
+  ).join('');
+  bar.querySelectorAll('.env-chip').forEach(el => {
+    el.onclick = () => {
+      const g = el.dataset.group;
+      activeGroup = (activeGroup === g) ? null : g;
+      renderEnvBar(groups);
+      renderIacGraph();
+    };
+  });
 }
 
 function renderIacGraph() {
   const host = document.getElementById('sysgraph');
   if (!host) return;
+  // renderSystem's own canvas.innerHTML rebuild used to be the only thing
+  // that ever cleared this host, which was fine while renderIacGraph() was
+  // only ever called once per full System-tab render. The environments chip
+  // row breaks that assumption -- clicking a chip re-renders just the infra
+  // graph via this function directly, and without clearing first the new
+  // boxes/svg pile up on top of the old ones instead of replacing them.
+  host.innerHTML = '';
   iacIndex = buildIacNodes();
   const edges = buildIacEdges(iacIndex.byId, iacIndex.alias);
+  // group flow: same mechanism as the Code tab's lens -- an edge between two
+  // boxes in the active group starts lit and labeled (e.lensLit), which
+  // drawEdgesDagre/setEdgeFocus already treat as a persistently-lit edge that
+  // still yields to an exclusive hover focus and reverts cleanly on mouseleave.
+  if (activeGroup) {
+    edges.forEach(e => {
+      e.lensLit = iacNodeGroup(iacIndex.byId[e.source]) === activeGroup &&
+                  iacNodeGroup(iacIndex.byId[e.target]) === activeGroup;
+    });
+  }
   const avail = availFor(host, 360, 320);
   const items = iacIndex.nodes.map((n, i) => {
     const el = makeIacBox(n, i);
